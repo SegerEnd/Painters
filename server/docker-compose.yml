@@ -1,0 +1,9 @@
+services:
+  painters-server:
+    build:
+      context: .  # Use the current directory as the build context
+      dockerfile: Dockerfile  # The Dockerfile to use for building the image
+    container_name: painters-server-container
+    ports:
+      - "591:591"
+    # restart: unless-stopped  # Automatically restart the container unless stopped manually

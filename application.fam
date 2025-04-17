@@ -1,0 +1,16 @@
+App(
+    appid="painters",
+    name="Painters",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="painters_app",
+    stack_size=6 * 1024,
+    fap_category="GPIO",
+    # fap_category="Games",
+    # Optional values
+    fap_version="0.1",
+    fap_icon="painters.png",  # 10x10 1-bit PNGs
+    fap_description="A multiplayer painting canvas where you can place pixels on one big canvas.",
+    fap_author="SegerEnd",
+    # fap_weburl="https://github.com/user/painters",
+    fap_icon_assets="images",  # Image assets to compile for this application
+)
