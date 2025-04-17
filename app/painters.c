@@ -12,7 +12,7 @@
 #define SCREEN_HEIGHT         64
 #define PAINTED_BYTES_SIZE    ((MAP_WIDTH * MAP_HEIGHT + 7) / 8) // 1 byte = 8 bits
 #define ZOOM_MESSAGE_DURATION 2000 // 2 seconds in milliseconds
-#define WEBSOCKET_URL         "ws://painters.segerend.nl/"
+#define WEBSOCKET_URL         "ws://painters.segerend.nl"
 #define WEBSOCKET_PORT        591
 
 typedef enum {
@@ -130,7 +130,8 @@ void paint_draw_callback(Canvas* canvas, void* ctx) {
         draw_board(canvas, state);
         draw_ui(canvas, state);
     } else {
-        canvas_draw_str(canvas, 1, 10, "Connecting to server...");
+        canvas_set_font(canvas, FontPrimary);
+        canvas_draw_str(canvas, 1, 10, "Not connected to server");
     }
     furi_mutex_release(state->mutex);
 }
@@ -187,14 +188,13 @@ static bool game_start_websocket(FlipperHTTP* fhttp) {
         FURI_LOG_E(TAG, "Failed to start websocket");
         return false;
     }
-    unsigned int max_interations = 50;
+    unsigned int max_interations = 40;
     fhttp->state = RECEIVING;
-    while(fhttp->state != IDLE && max_interations > 0) {
+    while(fhttp->state != IDLE && --max_interations > 0) {
         furi_delay_ms(100);
-        max_interations--;
-        if(max_interations == 0) {
-            return false;
-        }
+    }
+    if(max_interations == 0) {
+        return false;
     }
 
     return true;
@@ -277,15 +277,7 @@ int32_t painters_app(void* p) {
         return -1;
     }
 
-    // Setup/send request
-    // if(!flipper_http_request(
-    //        fhttp, GET, "https://segerend.nl/", "{\"Content-Type\":\"text/html\"}", NULL)) {
-    //     FURI_LOG_E(TAG, "Failed to send GET request");
-    //     return -1;
-    // }
-
     if(!game_start_websocket(fhttp)) {
-        flipper_http_free(fhttp);
         goto cleanup;
     } else {
         state->connected = true;
@@ -295,11 +287,6 @@ int32_t painters_app(void* p) {
 
     while(furi_message_queue_get(queue, &event, FuriWaitForever) == FuriStatusOk) {
         bool should_update = false;
-
-        if(fhttp->state == IDLE) {
-            state->connected = true;
-            should_update = true;
-        }
 
         if(event.type == InputTypeShort) {
             switch(event.key) {
@@ -328,6 +315,7 @@ int32_t painters_app(void* p) {
                 }
             } break;
             case InputKeyBack:
+                flipper_http_websocket_stop(fhttp);
                 goto cleanup;
             default:
                 break;
@@ -340,12 +328,6 @@ int32_t painters_app(void* p) {
             case InputKeyOk:
                 cycle_zoom(state);
                 should_update = true;
-                break;
-            case InputKeyBack:
-                memset(state->painted_bytes, 0, PAINTED_BYTES_SIZE);
-                should_update = true;
-
-                flipper_http_websocket_stop(fhttp);
                 break;
             default:
                 break;

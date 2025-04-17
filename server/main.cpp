@@ -108,5 +108,8 @@ int main() {
             })
         .run();
 
+    clients.clear();
+    canvas_bits.clear();
+
     return 0;
 }

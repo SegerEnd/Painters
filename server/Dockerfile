@@ -21,7 +21,7 @@ RUN git clone https://github.com/uNetworking/uWebSockets.git \
     && make
 
 # Copy the source code, .txt otherwise ufbt wants to build it too
-COPY main.txt main.cpp
+COPY main.cpp .
 
 # Compile app with uWebSockets headers and library
 RUN g++ -std=c++23 -IuWebSockets/src -IuWebSockets/uSockets/src -o painters_server main.cpp \

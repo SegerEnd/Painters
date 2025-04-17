@@ -11,6 +11,6 @@ App(
     fap_icon="painters.png",  # 10x10 1-bit PNGs
     fap_description="A multiplayer painting canvas where you can place pixels on one big canvas.",
     fap_author="SegerEnd",
-    # fap_weburl="https://github.com/user/painters",
+    # fap_weburl="https://github.com/SegerEnd/Painters",
     fap_icon_assets="images",  # Image assets to compile for this application
 )
