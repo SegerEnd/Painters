@@ -181,10 +181,11 @@ static bool game_start_websocket(FlipperHTTP* fhttp) {
         FURI_LOG_E(TAG, "FlipperHTTP is NULL");
         return false;
     }
+
     fhttp->state = IDLE; // ensure it's set to IDLE for the next request
     char websocket_url[128];
     snprintf(websocket_url, sizeof(websocket_url), "%s", WEBSOCKET_URL);
-    if(!flipper_http_websocket_start(fhttp, websocket_url, WEBSOCKET_PORT, "")) {
+    if(!flipper_http_websocket_start(fhttp, websocket_url, WEBSOCKET_PORT, "{\"Content-Type\":\"application/json\"}")) {
         FURI_LOG_E(TAG, "Failed to start websocket");
         return false;
     }
@@ -194,6 +195,7 @@ static bool game_start_websocket(FlipperHTTP* fhttp) {
         furi_delay_ms(100);
     }
     if(max_interations == 0) {
+        FURI_LOG_E(TAG, "Timeout waiting for websocket, max tries reached");
         return false;
     }
 
@@ -281,6 +283,7 @@ int32_t painters_app(void* p) {
         goto cleanup;
     } else {
         state->connected = true;
+        view_port_update(vp);
     }
 
     InputEvent event;
@@ -352,6 +355,9 @@ int32_t painters_app(void* p) {
     }
 
 cleanup:
+    //if(state->connected) {
+    flipper_http_websocket_stop(fhttp);
+    //}
     flipper_http_free(fhttp);
     gui_remove_view_port(gui, vp);
     view_port_free(vp);
