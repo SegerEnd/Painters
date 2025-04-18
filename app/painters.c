@@ -189,7 +189,7 @@ static bool game_start_websocket(FlipperHTTP* fhttp) {
         FURI_LOG_E(TAG, "Failed to start websocket");
         return false;
     }
-    unsigned int max_interations = 40;
+    unsigned int max_interations = 100;
     fhttp->state = RECEIVING;
     while(fhttp->state != IDLE && --max_interations > 0) {
         furi_delay_ms(100);
@@ -278,6 +278,8 @@ int32_t painters_app(void* p) {
         FURI_LOG_E(TAG, "Failed to receive PONG response");
         return -1;
     }
+
+    furi_delay_ms(1000); // Wait for a second before starting the websocket
 
     if(!game_start_websocket(fhttp)) {
         FURI_LOG_E(TAG, "Failed to start websocket connection");

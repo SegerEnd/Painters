@@ -51,7 +51,7 @@ static int32_t flipper_http_worker(void *context)
                 fhttp->bytes_received += received;
 
                 // print amount of bytes received
-                // FURI_LOG_I(HTTP_TAG, "Bytes received: %d", fhttp->bytes_received);
+                FURI_LOG_I(HTTP_TAG, "Bytes received: %d", fhttp->bytes_received);
 
                 // Append the received byte to the file if saving is enabled
                 if (fhttp->save_bytes)
@@ -283,7 +283,7 @@ FlipperHTTP *flipper_http_alloc()
 
     fhttp->state = IDLE;
 
-    // FURI_LOG_I(HTTP_TAG, "UART initialized successfully.");
+    FURI_LOG_I(HTTP_TAG, "UART initialized successfully.");
     return fhttp;
 }
 
@@ -342,7 +342,7 @@ void flipper_http_free(FlipperHTTP *fhttp)
     free(fhttp);
     fhttp = NULL;
 
-    // FURI_LOG_I("FlipperHTTP", "UART deinitialized successfully.");
+    FURI_LOG_I("FlipperHTTP", "UART deinitialized successfully.");
 }
 
 /**
@@ -1029,7 +1029,7 @@ bool flipper_http_send_data(FlipperHTTP *fhttp, const char *data)
     fhttp->state = SENDING;
     furi_hal_serial_tx(fhttp->serial_handle, (const uint8_t *)send_buffer, send_length);
 
-    // FURI_LOG_I("FlipperHTTP", "Sent data over UART: %s", send_buffer);
+    FURI_LOG_I("FlipperHTTP", "Sent data over UART: %s", send_buffer);
     fhttp->state = IDLE;
     return true;
 }
@@ -1103,8 +1103,8 @@ static void set_header(FlipperHTTP *fhttp)
     }
 
     // print results
-    // FURI_LOG_I(HTTP_TAG, "Status Code: %d", fhttp->status_code);
-    // FURI_LOG_I(HTTP_TAG, "Content Length: %d", fhttp->content_length);
+    FURI_LOG_I(HTTP_TAG, "Status Code: %d", fhttp->status_code);
+    FURI_LOG_I(HTTP_TAG, "Content Length: %d", fhttp->content_length);
 
     // free the furi_string
     furi_string_free(furi_string);
@@ -1189,7 +1189,7 @@ static void flipper_http_rx_callback(const char *line, void *context)
     }
 
     // Uncomment below line to log the data received over UART
-    // FURI_LOG_I(HTTP_TAG, "Received UART line: %s", line);
+    FURI_LOG_I(HTTP_TAG, "Received UART line: %s", line);
 
     // Check if we've started receiving data from a GET request
     if (fhttp->started_receiving && (fhttp->method == GET || fhttp->method == BYTES))
