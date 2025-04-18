@@ -189,14 +189,9 @@ static bool game_start_websocket(FlipperHTTP* fhttp) {
         FURI_LOG_E(TAG, "Failed to start websocket");
         return false;
     }
-    unsigned int max_interations = 100;
     fhttp->state = RECEIVING;
-    while(fhttp->state != IDLE && --max_interations > 0) {
+    while(fhttp->state != IDLE) {
         furi_delay_ms(100);
-    }
-    if(max_interations == 0) {
-        FURI_LOG_E(TAG, "Timeout waiting for websocket, max tries reached");
-        return false;
     }
 
     return true;
@@ -281,14 +276,6 @@ int32_t painters_app(void* p) {
 
     furi_delay_ms(1000); // Wait for a second before starting the websocket
 
-    if(!game_start_websocket(fhttp)) {
-        FURI_LOG_E(TAG, "Failed to start websocket connection");
-        return -1;
-    } else {
-        state->connected = true;
-        view_port_update(vp);
-    }
-
     InputEvent event;
 
     while(furi_message_queue_get(queue, &event, FuriWaitForever) == FuriStatusOk) {
@@ -318,6 +305,14 @@ int32_t painters_app(void* p) {
                 } else {
                     // If not painted, paint it
                     state->painted_bytes[byte_index] |= (1 << bit_index);
+                }
+
+                if(!game_start_websocket(fhttp)) {
+                    FURI_LOG_E(TAG, "Failed to start websocket connection");
+                    return -1;
+                } else {
+                    state->connected = true;
+                    view_port_update(vp);
                 }
             } break;
             case InputKeyBack:
