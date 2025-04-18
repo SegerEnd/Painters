@@ -280,7 +280,8 @@ int32_t painters_app(void* p) {
     }
 
     if(!game_start_websocket(fhttp)) {
-        goto cleanup;
+        FURI_LOG_E(TAG, "Failed to start websocket connection");
+        return -1;
     } else {
         state->connected = true;
         view_port_update(vp);
