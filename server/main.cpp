@@ -98,12 +98,12 @@ int main() {
             res->writeStatus("404 Not Found")->end("This server expects WebSocket connections.");
         })
         .listen(
-            591,
+            80,
             [](auto* listen_socket) {
                 if (listen_socket) {
-                    std::cout << "Server listening on port 591" << std::endl;
+                    std::cout << "Server listening on port 80" << std::endl;
                 } else {
-                    std::cerr << "Failed to listen on port 591" << std::endl;
+                    std::cerr << "Failed to listen on port 80" << std::endl;
                 }
             })
         .run();

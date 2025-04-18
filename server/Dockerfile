@@ -33,7 +33,7 @@ FROM ubuntu:latest
 # Copy the compiled binary from the build stage
 COPY --from=build /painters_server /painters_server
 
-EXPOSE 591
+EXPOSE 80
 
 # Run your app
 CMD ["./painters_server"]

@@ -13,7 +13,7 @@
 #define PAINTED_BYTES_SIZE    ((MAP_WIDTH * MAP_HEIGHT + 7) / 8) // 1 byte = 8 bits
 #define ZOOM_MESSAGE_DURATION 2000 // 2 seconds in milliseconds
 #define WEBSOCKET_URL         "ws://painters.segerend.nl"
-#define WEBSOCKET_PORT        591
+#define WEBSOCKET_PORT        80
 
 typedef enum {
     ZoomOut = 1,
