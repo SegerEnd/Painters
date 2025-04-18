@@ -4,7 +4,7 @@ import time
 import socket
 
 async def connect():
-    uri = "ws://painters.segerend.nl:80"
+    uri = "ws://painters.segerend.nl"
     while True:
         try:
             # Attempt to establish a WebSocket connection
