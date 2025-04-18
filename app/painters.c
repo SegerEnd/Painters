@@ -275,6 +275,13 @@ int32_t painters_app(void* p) {
     }
 
     furi_delay_ms(1000); // Wait for a second before starting the websocket
+    if(!game_start_websocket(fhttp)) {
+        FURI_LOG_E(TAG, "Failed to start websocket connection");
+        return -1;
+    } else {
+        state->connected = true;
+        view_port_update(vp);
+    }
 
     InputEvent event;
 
@@ -307,13 +314,6 @@ int32_t painters_app(void* p) {
                     state->painted_bytes[byte_index] |= (1 << bit_index);
                 }
 
-                if(!game_start_websocket(fhttp)) {
-                    FURI_LOG_E(TAG, "Failed to start websocket connection");
-                    return -1;
-                } else {
-                    state->connected = true;
-                    view_port_update(vp);
-                }
             } break;
             case InputKeyBack:
                 flipper_http_websocket_stop(fhttp);
