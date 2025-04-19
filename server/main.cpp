@@ -4,9 +4,12 @@
 #include <algorithm>
 #include <cstdint> // For uint16_t
 
+#define WEBSOCKET_PORT 80
+#define MAX_CLIENTS 75
+
 // Canvas configuration
-const int CANVAS_WIDTH = 550;
-const int CANVAS_HEIGHT = 550;
+const int CANVAS_WIDTH = 400;
+const int CANVAS_HEIGHT = 400;
 const size_t CANVAS_BITS_SIZE = ((CANVAS_WIDTH * CANVAS_HEIGHT + 7) / 8); // 1 byte = 8 bits
 std::vector<uint8_t> canvas_bits(CANVAS_BITS_SIZE, 0); // Bit array for canvas
 
@@ -35,19 +38,22 @@ void setPixel(int x, int y, bool color) {
 
 // Sends the entire canvas state to a client
 void sendCanvas(WebSocketType* ws) {
-    // send the canvas size
-    std::string canvas_size = "[CANVAS_SIZE]" + std::to_string(CANVAS_WIDTH) + "," + std::to_string(CANVAS_HEIGHT);
-    ws->send(canvas_size, uWS::TEXT);
+    // Convert the byte array to a std::string
+    std::string canvas_data(reinterpret_cast<const char*>(canvas_bits.data()), canvas_bits.size());
 
-    // send the full byte array
-    std::string canvas_data(reinterpret_cast<char*>(canvas_bits.data()), canvas_bits.size());
-    std::cout << "Sending canvas data to client: " << canvas_data.size() << " bytes" << std::endl;
-    ws->send(canvas_data, uWS::BINARY);
-    std::cout << "Canvas data sent to client" << std::endl;
+    // Add [CANVAS] prefix
+    canvas_data = "[CANVAS]" + canvas_data;
+
+    std::cout << "Sending canvas 🗺️ data to client: " << canvas_data.size() << " bytes" << std::endl;
+
+    // Send to client as TEXT frame
+    ws->send(canvas_data, uWS::TEXT);
 }
 
 int main() {
     std::cout << "Starting WebSocket server... 🚀" << std::endl;
+
+    std::fill(canvas_bits.begin(), canvas_bits.end(), 0);
 
     uWS::App()
         .ws<MyUserData>(
@@ -57,8 +63,16 @@ int main() {
                 .maxPayloadLength = 1 * 1024, // For incoming messages (5 bytes < 1024)
                 .idleTimeout = 120,
                 .open = [](WebSocketType* ws) {
-                    std::string ip = std::string(ws->getRemoteAddressAsText());
-                    std::cout << "New client connected from " << ip << std::endl;
+                    // limit the number of connected clients
+                    if (clients.size() > MAX_CLIENTS) {
+                        std::cout << "Max clients reached" << std::endl;
+                        ws->close();
+                        return;
+                    }
+
+                    // get the time to print when the client connected
+                    auto time = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                    std::cout << std::ctime(&time) << "New client connected, addr: " << ws->getRemoteAddressAsText() << std::endl;
 
                     clients.push_back(ws);
 
@@ -102,14 +116,12 @@ int main() {
                         }
 
                         ws->getUserData()->flipper_name = new_name;
-                        std::cout << "Client set name to [" << new_name << "]" << std::endl;
+                        std::cout << "Client set name to: " << new_name << std::endl;
                         return;
                     }
 
-                    if (message.starts_with("[PIXEL]")) {
-                        std::cout << "Received pixel update: " << message << std::endl;
-                    
-                        std::string_view pixel_data = message.substr(7); // after "[PIXEL]"
+                    if (message.starts_with("[PIXEL]")) {                    
+                        std::string_view pixel_data = message.substr(7); // get value after "[PIXEL]"
                     
                         auto x_pos = pixel_data.find("x:");
                         auto y_pos = pixel_data.find(",y:");
@@ -134,8 +146,14 @@ int main() {
                         }
                     
                         setPixel(x, y, color == 1);
+
+                        // get name of the client
+                        std::string client_name = ws->getUserData()->flipper_name;
+                        if (client_name.empty()) {
+                            client_name = "Unknown";
+                        }
                     
-                        std::cout << "Set pixel at (" << x << ", " << y << ") to color "
+                        std::cout << client_name << ": Set pixel at (" << x << ", " << y << ") to color "
                                   << (color ? "black" : "white") << std::endl;
                     
                         for (auto client : clients) {
@@ -143,9 +161,13 @@ int main() {
                         }
                         return;
                     }
+
+                    std::cout << "Received message: " << message << std::endl;
                 },
                 .close = [](WebSocketType* ws, int /*code*/, std::string_view /*message*/) {
-                    std::cout << "Client disconnected" << std::endl;
+                    // get the time to print when the client disconnected
+                    auto time = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                    std::cout << std::ctime(&time) << " Client disconnected" << std::endl;
                     clients.erase(std::remove(clients.begin(), clients.end(), ws), clients.end());
                 }
             })
@@ -156,12 +178,12 @@ int main() {
             res->writeStatus("404 Not Found")->end("This server expects WebSocket connections.");
         })
         .listen(
-            80,
+            WEBSOCKET_PORT,
             [](auto* listen_socket) {
                 if (listen_socket) {
-                    std::cout << "Server listening on port 80" << std::endl;
+                    std::cout << "Server listening on port " << WEBSOCKET_PORT << std::endl << "Start painting! 🎨" << std::endl;
                 } else {
-                    std::cerr << "Failed to listen on port 80" << std::endl;
+                    std::cerr << "Failed to listen on port " << WEBSOCKET_PORT << std::endl;
                 }
             })
         .run();
