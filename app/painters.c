@@ -6,8 +6,8 @@
 #include <flipper_http/flipper_http.h>
 
 #define TAG                   "PAINTERS"
-#define MAP_WIDTH             550
-#define MAP_HEIGHT            550
+#define MAP_WIDTH             400
+#define MAP_HEIGHT            400
 #define SCREEN_WIDTH          128
 #define SCREEN_HEIGHT         64
 #define PAINTED_BYTES_SIZE    ((MAP_WIDTH * MAP_HEIGHT + 7) / 8) // 1 byte = 8 bits
@@ -31,6 +31,8 @@ typedef struct {
 } Camera;
 
 typedef struct {
+    FlipperHTTP* fhttp;
+    ViewPort* vp;
     FuriMutex* mutex;
     Cursor cursor;
     Camera camera;
@@ -38,6 +40,7 @@ typedef struct {
     ZoomLevel zoom;
     uint32_t zoom_message_start_time;
     bool connected;
+    char* last_server_response;
 } PaintData;
 
 static void clamp_cursor(Cursor* cursor) {
@@ -185,7 +188,8 @@ static bool game_start_websocket(FlipperHTTP* fhttp) {
     fhttp->state = IDLE; // ensure it's set to IDLE for the next request
     char websocket_url[128];
     snprintf(websocket_url, sizeof(websocket_url), "%s", WEBSOCKET_URL);
-    if(!flipper_http_websocket_start(fhttp, websocket_url, WEBSOCKET_PORT, "{\"Content-Type\":\"application/json\"}")) {
+    if(!flipper_http_websocket_start(
+           fhttp, websocket_url, WEBSOCKET_PORT, "{\"Content-Type\":\"application/json\"}")) {
         FURI_LOG_E(TAG, "Failed to start websocket");
         return false;
     }
@@ -197,13 +201,68 @@ static bool game_start_websocket(FlipperHTTP* fhttp) {
     return true;
 }
 
+static void send_pixel(FlipperHTTP* fhttp, int x, int y, int color) {
+    if(!fhttp) {
+        FURI_LOG_E(TAG, "FlipperHTTP is NULL");
+        return;
+    }
+
+    char message[64];
+    snprintf(message, sizeof(message), "[PIXEL]x:%d,y:%d,c:%d", x, y, color);
+    if(!flipper_http_send_data(fhttp, message)) {
+        FURI_LOG_E(TAG, "Failed to send pixel update to server");
+    } else {
+        FURI_LOG_I(TAG, "Pixel update sent: %s", message);
+    }
+}
+
+long int websocket_listener_thread(void* context) {
+    PaintData* state = (PaintData*)context;
+    FlipperHTTP* fhttp = state->fhttp;
+
+    while(furi_thread_flags_get() != WorkerEvtStop) {
+        if(!state->last_server_response) {
+            state->last_server_response = (char*)malloc(RX_BUF_SIZE);
+        }
+        if(fhttp && fhttp->last_response && strlen(fhttp->last_response) > 0 &&
+           strcmp(fhttp->last_response, state->last_server_response) != 0) {
+            // Parse and handle server messages here
+
+            FURI_LOG_I(TAG, "Received server message: %s", fhttp->last_response);
+
+            // Clear the last response content
+            free(state->last_server_response);
+
+            // set last_server_response to the fhttp->last_response to check if it is not twice updated, dont keep the old pointer
+            // when it starts with [CANVAS] only store [CANVAS] and ignore the rest because its a big response
+            if(strncmp(fhttp->last_response, "[CANVAS]", 8) == 0) {
+                state->last_server_response = (char*)malloc(8 + 1);
+                strncpy(state->last_server_response, fhttp->last_response, 8);
+
+                FURI_LOG_I(TAG, "Received canvas data: %s", state->last_server_response);
+
+                char* data = strstr(fhttp->last_response, "[CANVAS]") + 8;
+                memcpy(state->painted_bytes, data, PAINTED_BYTES_SIZE);
+            } else {
+                state->last_server_response = strdup(fhttp->last_response);
+            }
+
+            // Ask view port to redraw
+            view_port_update(state->vp);
+        }
+        furi_delay_ms(50); // Sleep a little
+    }
+
+    return 0;
+}
+
 int32_t painters_app(void* p) {
     UNUSED(p);
 
     FuriMessageQueue* queue = furi_message_queue_alloc(8, sizeof(InputEvent));
     if(!queue) return -1;
 
-    PaintData* state = malloc(sizeof(PaintData));
+    PaintData* state = (PaintData*)malloc(sizeof(PaintData));
     if(!state) {
         furi_message_queue_free(queue);
         return -1;
@@ -246,6 +305,7 @@ int32_t painters_app(void* p) {
         furi_message_queue_free(queue);
         return -1;
     }
+
     view_port_draw_callback_set(vp, paint_draw_callback, state);
     view_port_input_callback_set(vp, paint_input_callback, queue);
 
@@ -274,14 +334,31 @@ int32_t painters_app(void* p) {
         return -1;
     }
 
-    furi_delay_ms(1000); // Wait for a second before starting the websocket
+    state->fhttp = fhttp; // Set the fhttp pointer in the state
+    state->vp = vp; // Set the view port pointer in the state
+
+    flipper_http_websocket_stop(fhttp); // Stop any existing websocket connection
+
+    furi_delay_ms(500); // Wait for a second before starting the websocket
     if(!game_start_websocket(fhttp)) {
         FURI_LOG_E(TAG, "Failed to start websocket connection");
         return -1;
     } else {
         state->connected = true;
         view_port_update(vp);
+
+        char name[16];
+        snprintf(name, sizeof(name), "[NAME]%s", furi_hal_version_get_name_ptr());
+        flipper_http_send_data(fhttp, name);
     }
+
+    FuriThread* ws_thread = furi_thread_alloc();
+    furi_thread_set_name(ws_thread, "WebSocketListener");
+    furi_thread_set_callback(ws_thread, websocket_listener_thread);
+    furi_thread_set_context(ws_thread, state);
+    furi_thread_set_stack_size(ws_thread, 1024);
+    furi_thread_set_priority(ws_thread, FuriThreadPriorityNormal);
+    furi_thread_start(ws_thread); // Start the thread
 
     InputEvent event;
 
@@ -316,21 +393,14 @@ int32_t painters_app(void* p) {
                     state->painted_bytes[byte_index] |= (1 << bit_index);
                     changed = true;
                 }
-                if (changed) {
-                    // Send the updated pixel to the server
-                    char message[64];
-                    snprintf(message, sizeof(message), "[PIXEL]x:%d,y:%d,c:%d", state->cursor.x, state->cursor.y, (state->painted_bytes[byte_index] & (1 << bit_index)) ? 1 : 0);
-
-                    FURI_LOG_I(TAG, "Sending pixel update: %s", message);
-
-                    // Send the message to the server
-                    if (!flipper_http_send_data(fhttp, message)) {
-                        FURI_LOG_E(TAG, "Failed to send pixel update to server");
-                    } else {
-                        FURI_LOG_I(TAG, "Pixel update sent");
-                    }
+                if(changed) {
+                    send_pixel(
+                        fhttp,
+                        state->cursor.x,
+                        state->cursor.y,
+                        state->painted_bytes[byte_index] & (1 << bit_index) ? 1 : 0);
+                    should_update = true;
                 }
-
             } break;
             case InputKeyBack:
                 flipper_http_websocket_stop(fhttp);
@@ -367,6 +437,9 @@ int32_t painters_app(void* p) {
             center_camera_on_cursor(state);
             view_port_update(vp);
         }
+
+        // delay for a short time to reduce CPU usage
+        furi_delay_ms(100);
     }
 
 cleanup:
@@ -378,9 +451,19 @@ cleanup:
     view_port_free(vp);
     furi_message_queue_free(queue);
     furi_mutex_free(state->mutex);
+
+    furi_record_close(RECORD_GUI);
+
+    // Stop the thread
+    furi_thread_flags_set(furi_thread_get_id(ws_thread), WorkerEvtStop);
+    furi_thread_join(ws_thread);
+    furi_thread_free(ws_thread);
+
+    if(state->last_server_response) {
+        free(state->last_server_response);
+    }
     free(state->painted_bytes);
     free(state);
-    furi_record_close(RECORD_GUI);
 
     return 0;
 }

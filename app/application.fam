@@ -3,7 +3,7 @@ App(
     name="Painters",
     apptype=FlipperAppType.EXTERNAL,
     entry_point="painters_app",
-    stack_size=6 * 1024,
+    stack_size=7 * 1024,
     fap_category="GPIO",
     # fap_category="Games",
     # Optional values
