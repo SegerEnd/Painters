@@ -35,10 +35,15 @@ void setPixel(int x, int y, bool color) {
 
 // Sends the entire canvas state to a client
 void sendCanvas(WebSocketType* ws) {
-    std::string_view canvas_data(
-        reinterpret_cast<const char*>(canvas_bits.data()), canvas_bits.size());
+    // send the canvas size
+    std::string canvas_size = "[CANVAS_SIZE]" + std::to_string(CANVAS_WIDTH) + "," + std::to_string(CANVAS_HEIGHT);
+    ws->send(canvas_size, uWS::TEXT);
+
+    // send the full byte array
+    std::string canvas_data(reinterpret_cast<char*>(canvas_bits.data()), canvas_bits.size());
+    std::cout << "Sending canvas data to client: " << canvas_data.size() << " bytes" << std::endl;
     ws->send(canvas_data, uWS::BINARY);
-    std::cout << "Sent canvas data (" << canvas_bits.size() << " bytes) to client" << std::endl;
+    std::cout << "Canvas data sent to client" << std::endl;
 }
 
 int main() {
@@ -101,6 +106,42 @@ int main() {
                         return;
                     }
 
+                    if (message.starts_with("[PIXEL]")) {
+                        std::cout << "Received pixel update: " << message << std::endl;
+                    
+                        std::string_view pixel_data = message.substr(7); // after "[PIXEL]"
+                        
+                        auto bi_pos = pixel_data.find("Bi:");
+                        auto c_pos = pixel_data.find(",c:");
+                    
+                        if (bi_pos != 0 || c_pos == std::string_view::npos) {
+                            std::cout << "Invalid pixel update format: " << message << std::endl;
+                            return;
+                        }
+                    
+                        auto byte_index_value = std::stoul(std::string(pixel_data.substr(3, c_pos - 3)));
+                        auto color_value = std::stoul(std::string(pixel_data.substr(c_pos + 3)));
+                    
+                        if (byte_index_value >= canvas_bits.size()) {
+                            std::cout << "Invalid byte index: " << byte_index_value << std::endl;
+                            return;
+                        }
+                        if (color_value > 1) {
+                            std::cout << "Invalid color value: " << color_value << std::endl;
+                            return;
+                        }
+                    
+                        setPixel(byte_index_value % CANVAS_WIDTH, byte_index_value / CANVAS_WIDTH, color_value == 1);
+                    
+                        std::cout << "Set pixel at index " << byte_index_value << " to color "
+                                  << (color_value ? "black" : "white") << std::endl;
+                    
+                        for (auto client : clients) {
+                            client->send(message, opCode);
+                        }
+                        return;
+                    }                    
+
                     if (message.size() == 5) {
                         // Parse 5-byte message: x (2 bytes), y (2 bytes), color (1 byte)
                         uint16_t x = static_cast<uint16_t>(static_cast<uint8_t>(message[0])) |
@@ -127,8 +168,8 @@ int main() {
                                   << std::endl;
 
                         // close the connection, for now to test
-                        ws->close();
-                        return;
+                        // ws->close();
+                        // return;
                     }
                 },
                 .close = [](WebSocketType* ws, int /*code*/, std::string_view /*message*/) {
