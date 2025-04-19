@@ -110,66 +110,38 @@ int main() {
                         std::cout << "Received pixel update: " << message << std::endl;
                     
                         std::string_view pixel_data = message.substr(7); // after "[PIXEL]"
-                        
-                        auto bi_pos = pixel_data.find("Bi:");
+                    
+                        auto x_pos = pixel_data.find("x:");
+                        auto y_pos = pixel_data.find(",y:");
                         auto c_pos = pixel_data.find(",c:");
                     
-                        if (bi_pos != 0 || c_pos == std::string_view::npos) {
+                        if (x_pos != 0 || y_pos == std::string_view::npos || c_pos == std::string_view::npos) {
                             std::cout << "Invalid pixel update format: " << message << std::endl;
                             return;
                         }
                     
-                        auto byte_index_value = std::stoul(std::string(pixel_data.substr(3, c_pos - 3)));
-                        auto color_value = std::stoul(std::string(pixel_data.substr(c_pos + 3)));
+                        auto x = std::stoul(std::string(pixel_data.substr(2, y_pos - 2)));
+                        auto y = std::stoul(std::string(pixel_data.substr(y_pos + 3, c_pos - (y_pos + 3))));
+                        auto color = std::stoul(std::string(pixel_data.substr(c_pos + 3)));
                     
-                        if (byte_index_value >= canvas_bits.size()) {
-                            std::cout << "Invalid byte index: " << byte_index_value << std::endl;
+                        if (x >= CANVAS_WIDTH || y >= CANVAS_HEIGHT) {
+                            std::cout << "Invalid pixel coordinates: (" << x << ", " << y << ")" << std::endl;
                             return;
                         }
-                        if (color_value > 1) {
-                            std::cout << "Invalid color value: " << color_value << std::endl;
+                        if (color > 1) {
+                            std::cout << "Invalid color value: " << color << std::endl;
                             return;
                         }
                     
-                        setPixel(byte_index_value % CANVAS_WIDTH, byte_index_value / CANVAS_WIDTH, color_value == 1);
+                        setPixel(x, y, color == 1);
                     
-                        std::cout << "Set pixel at index " << byte_index_value << " to color "
-                                  << (color_value ? "black" : "white") << std::endl;
+                        std::cout << "Set pixel at (" << x << ", " << y << ") to color "
+                                  << (color ? "black" : "white") << std::endl;
                     
                         for (auto client : clients) {
                             client->send(message, opCode);
                         }
                         return;
-                    }                    
-
-                    if (message.size() == 5) {
-                        // Parse 5-byte message: x (2 bytes), y (2 bytes), color (1 byte)
-                        uint16_t x = static_cast<uint16_t>(static_cast<uint8_t>(message[0])) |
-                                     (static_cast<uint16_t>(static_cast<uint8_t>(message[1])) << 8);
-                        uint16_t y = static_cast<uint16_t>(static_cast<uint8_t>(message[2])) |
-                                     (static_cast<uint16_t>(static_cast<uint8_t>(message[3])) << 8);
-                        bool color = (message[4] == 1);
-
-                        if (x < CANVAS_WIDTH && y < CANVAS_HEIGHT) {
-                            setPixel(x, y, color);
-                            std::cout << "Received pixel update: (" << x << ", " << y << ", "
-                                      << (color ? "white" : "black") << ")" << std::endl;
-                            // Broadcast the update to all clients
-                            for (auto client : clients) {
-                                client->send(message, opCode);
-                            }
-                        } else {
-                            std::cout << "Out-of-bounds pixel update: (" << x << ", " << y << ")"
-                                      << std::endl;
-                        }
-                        return;
-                    } else {
-                        std::cout << "Invalid message size: " << message.size() << " bytes (expected 5) " << message
-                                  << std::endl;
-
-                        // close the connection, for now to test
-                        // ws->close();
-                        // return;
                     }
                 },
                 .close = [](WebSocketType* ws, int /*code*/, std::string_view /*message*/) {
