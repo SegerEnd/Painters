@@ -306,12 +306,28 @@ int32_t painters_app(void* p) {
                 int index = state->cursor.y * MAP_WIDTH + state->cursor.x;
                 int byte_index = index / 8;
                 int bit_index = index % 8;
+                bool changed = false;
                 if(state->painted_bytes[byte_index] & (1 << bit_index)) {
                     // If painted, erase it
                     state->painted_bytes[byte_index] &= ~(1 << bit_index);
+                    changed = true;
                 } else {
                     // If not painted, paint it
                     state->painted_bytes[byte_index] |= (1 << bit_index);
+                    changed = true;
+                }
+                if (changed) {
+                    // Send the updated pixel to the server
+                    uint8_t message[5];
+                    message[0] = state->cursor.x & 0xFF;
+                    message[1] = (state->cursor.x >> 8) & 0xFF;
+                    message[2] = state->cursor.y & 0xFF;
+                    message[3] = (state->cursor.y >> 8) & 0xFF;
+                    message[4] = (state->painted_bytes[byte_index] & (1 << bit_index)) ? 1 : 0;
+
+                    FURI_LOG_I(TAG, "Sending pixel update: (%d, %d, %d)", state->cursor.x, state->cursor.y,
+                        message[4]);
+                    flipper_http_send_data(fhttp, (const char*)message);
                 }
 
             } break;
