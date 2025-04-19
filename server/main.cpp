@@ -2,7 +2,8 @@
 #include <iostream>
 #include <vector>
 #include <algorithm>
-#include <cstdint> // For uint16_t
+#include <cstdint>
+#include <thread>
 
 #define WEBSOCKET_PORT 80
 #define MAX_CLIENTS 75
@@ -13,11 +14,7 @@ const int CANVAS_HEIGHT = 200;
 const size_t CANVAS_BITS_SIZE = ((CANVAS_WIDTH * CANVAS_HEIGHT + 7) / 8); // 1 byte = 8 bits
 std::vector<uint8_t> canvas_bits(CANVAS_BITS_SIZE, 0); // Bit array for canvas
 
-const int CHUNK_SIZE = 128; // Size of each chunk in bytes (Needed because of FlipperHTTP can only receive 128 bytes at once)
 const int CHUNK_SEND_DELAY_MS = 75; // Delay between sending chunks in milliseconds
-
-std::unordered_map<int, std::string> cached_chunks;
-std::mutex chunk_mutex;
 
 struct MyUserData {
     std::string flipper_name;
@@ -28,47 +25,54 @@ using WebSocketType = uWS::WebSocket<false, true, MyUserData>; // Server, with S
 // Global vector to keep track of all connected clients
 std::vector<WebSocketType*> clients;
 
-void sendChunkWithDelay(WebSocketType* ws, int chunk_id, const std::string& data) {
-    std::string chunk = "[MAP/CHUNK:" + std::to_string(chunk_id) + "]" + data;
-
-    {
-        std::scoped_lock lock(chunk_mutex);
-        cached_chunks[chunk_id] = chunk; // cache for possible resend
-    }
-
-    ws->send(chunk, uWS::OpCode::TEXT);
-}
-
 void sendCanvasInChunks(WebSocketType* ws) {
+    std::cout << "Sending canvas 🗺️ to client..." << std::endl;
+    ws->send("[MAP/SEND]", uWS::TEXT); // Tell client we're starting canvas
+
     size_t total_size = canvas_bits.size();
+    
+    // Calculate adjusted chunk size to fit the 128 byte limit, accounting for the header
+    const int MAX_PAYLOAD_SIZE = 128;
+    const int HEADER_SIZE = 14;  // Size of the "[MAP/CHUNK:X]" header
+    const int CHUNK_SIZE = MAX_PAYLOAD_SIZE - HEADER_SIZE; // Adjusted chunk size
+
     size_t num_chunks = (total_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
-    // Send MAP/SEND first
-    std::string start_msg = "[MAP/SEND:" + std::to_string(num_chunks) + "]";
-    uWS::Loop::get()->defer([ws, start_msg]() {
-        ws->send(start_msg, uWS::OpCode::TEXT);
-    });
+    // Check the size of canvas_bits to ensure it's non-empty
+    std::cout << "Canvas size: " << total_size << " bytes." << std::endl;
 
-    // Send each chunk after delay
-    for (size_t i = 0; i < num_chunks; ++i) {
-        size_t offset = i * CHUNK_SIZE;
-        size_t len = std::min(CHUNK_SIZE, total_size - offset);
-        std::string chunk(reinterpret_cast<const char*>(canvas_bits.data() + offset), len);
+    for (size_t chunk_index = 0; chunk_index < num_chunks; ++chunk_index) {
+        size_t start = chunk_index * CHUNK_SIZE;
+        size_t end = std::min(start + CHUNK_SIZE, total_size);
+        size_t chunk_size = end - start;
 
-        int delay_ms = static_cast<int>(i) * CHUNK_SEND_DELAY_MS;
+        // Create the chunk header
+        std::string chunk_header = "[MAP/CHUNK:" + std::to_string(chunk_index) + "]";
+        
+        // Convert the chunk data into a string
+        std::string chunk_data(reinterpret_cast<char*>(canvas_bits.data() + start), chunk_size);
 
-        uWS::Loop::get()->setTimeout(delay_ms, [ws, i, chunk]() {
-            sendChunkWithDelay(ws, static_cast<int>(i), chunk);
-        });
+        // Debugging: Print raw bytes of the chunk data in hexadecimal format
+        std::cout << "Chunk size: " << chunk_size << " bytes, Raw Data (hex): ";
+        for (size_t i = 0; i < chunk_size; ++i) {
+            printf("%02X ", static_cast<unsigned char>(chunk_data[i]));
+        }
+        std::cout << std::endl;
+
+        // Combine header and chunk data into a single message
+        std::string chunk_message = chunk_header + chunk_data;
+
+        // Send the chunk (header + data) as a single message
+        ws->send(chunk_message, uWS::TEXT);
+
+        std::cout << "Sent " << chunk_header << " number: " << chunk_index << " of " << num_chunks
+                  << " (" << chunk_size << " bytes)" << std::endl;
+
+        // Wait a little to prevent flooding the client
+        std::this_thread::sleep_for(std::chrono::milliseconds(CHUNK_SEND_DELAY_MS));
     }
 
-    // Send MAP/END after all chunks + a small extra delay
-    int final_delay = static_cast<int>(num_chunks) * CHUNK_SEND_DELAY_MS;
-    uWS::Loop::get()->setTimeout(final_delay, [ws]() {
-        ws->send("[MAP/END]", uWS::OpCode::TEXT);
-    });
-
-    std::cout << "Started chunked canvas send (" << num_chunks << " chunks)" << std::endl;
+    ws->send("[MAP/END]", uWS::TEXT); // Tell client we're finished sending
 }
 
 // Sets a pixel in the bit array at (x, y) to the specified color (1 = painted, 0 = not painted)
@@ -112,9 +116,8 @@ int main() {
 
                     clients.push_back(ws);
 
-                    // ask for the needed information e.g for now: flipper name
-                    std::string wake = "[WAKE]";
-                    ws->send(wake, uWS::TEXT);
+                    // std::string wake = "[WAKE]";
+                    // ws->send(wake, uWS::TEXT);
 
                     sendCanvasInChunks(ws); // Send initial canvas state
                 },
@@ -125,27 +128,30 @@ int main() {
                         return;
                     }
 
-                    if (message.starts_with("[MAP/RESEND:")) {
-                        int chunk_id = std::stoi(std::string(message.substr(12)));
-                        {
-                            std::scoped_lock lock(chunk_mutex);
-                            if (cached_chunks.count(chunk_id)) {
-                                std::string retry_chunk = cached_chunks[chunk_id];
+                    // if (message.starts_with("[MAP/RESEND:")) {
+                    //     int chunk_id = std::stoi(std::string(message.substr(12)));
                     
-                                // Defer sending so we don't block the server loop
-                                uWS::Loop::get()->defer([ws = ws, retry_chunk = std::move(retry_chunk)]() {
-                                    // Small delay per client to avoid spamming
-                                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                                    ws->send(retry_chunk, uWS::OpCode::TEXT);
-                                });
+                    //     size_t total_size = canvas_bits.size();
+                    //     size_t num_chunks = (total_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
                     
-                                std::cout << "Client requested resend of chunk " << chunk_id << std::endl;
-                            } else {
-                                std::cout << "⚠️ Client requested missing chunk " << chunk_id << ", not found in cache" << std::endl;
-                            }
-                        }
-                        return;
-                    }                    
+                    //     if (chunk_id < 0 || static_cast<size_t>(chunk_id) >= num_chunks) {
+                    //         std::cout << "Invalid chunk ID requested: " << chunk_id << std::endl;
+                    //         return;
+                    //     }
+                    
+                    //     size_t start = chunk_id * CHUNK_SIZE;
+                    //     size_t end = std::min(start + CHUNK_SIZE, total_size);
+                    //     size_t chunk_size = end - start;
+                    
+                    //     std::string chunk_data(reinterpret_cast<char*>(canvas_bits.data() + start), chunk_size);
+                    
+                    //     uWS::Loop::get()->defer([ws, chunk_data]() {
+                    //         ws->send(chunk_data, uWS::TEXT);
+                    //     });
+                    
+                    //     std::cout << "Client requested resend of chunk " << chunk_id << ", resent" << std::endl;
+                    //     return;
+                    // }
 
                     // if message contains "STOP]", close the connection, FlipperHTTP sends [SOCKET/STOP] when closing
                     if (message.find("STOP]") != std::string::npos) {
@@ -156,7 +162,7 @@ int main() {
 
                     if (message.find("[MAP/SYNC]") != std::string::npos) {
                         std::cout << "Client requested canvas sync" << std::endl;
-                        sendCanvasInChunks(ws); // Send full canvas back to the requesting client
+                        sendCanvasInChunks(ws);
                         return;
                     }
 
