@@ -8,10 +8,16 @@
 #define MAX_CLIENTS 75
 
 // Canvas configuration
-const int CANVAS_WIDTH = 400;
-const int CANVAS_HEIGHT = 400;
+const int CANVAS_WIDTH = 200;
+const int CANVAS_HEIGHT = 200;
 const size_t CANVAS_BITS_SIZE = ((CANVAS_WIDTH * CANVAS_HEIGHT + 7) / 8); // 1 byte = 8 bits
 std::vector<uint8_t> canvas_bits(CANVAS_BITS_SIZE, 0); // Bit array for canvas
+
+const int CHUNK_SIZE = 128;
+const int CHUNK_SEND_DELAY_MS = 75; // Delay between sending chunks in milliseconds
+
+std::unordered_map<int, std::string> cached_chunks;
+std::mutex chunk_mutex;
 
 struct MyUserData {
     std::string flipper_name;
@@ -19,7 +25,42 @@ struct MyUserData {
 
 using WebSocketType = uWS::WebSocket<false, true, MyUserData>; // Server, with SSL support
 
+// Global vector to keep track of all connected clients
 std::vector<WebSocketType*> clients;
+
+void sendChunkWithDelay(WebSocketType* ws, int chunk_id, const std::string& data, int delay_ms) {
+    std::string chunk = "[MAP/SEND:" + std::to_string(chunk_id) + "]" + data;
+
+    {
+        std::scoped_lock lock(chunk_mutex);
+        cached_chunks[chunk_id] = chunk; // cache it for resending
+    }
+
+    uWS::Loop::get()->defer([ws, chunk, delay_ms]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        ws->send(chunk, uWS::TEXT);
+    });
+}
+
+void sendCanvasInChunks(WebSocketType* ws) {
+    size_t total_size = canvas_bits.size();
+    size_t num_chunks = (total_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
+
+    for (size_t i = 0; i < num_chunks; ++i) {
+        size_t offset = i * CHUNK_SIZE;
+        size_t len = std::min(static_cast<size_t>(CHUNK_SIZE), total_size - offset); // <-- fixed
+        std::string chunk(reinterpret_cast<const char*>(canvas_bits.data() + offset), len);
+        sendChunkWithDelay(ws, static_cast<int>(i), chunk, CHUNK_SEND_DELAY_MS * static_cast<int>(i));
+    }
+
+    // Send [MAP/END] after final chunk
+    uWS::Loop::get()->defer([ws]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(CHUNK_SEND_DELAY_MS));
+        ws->send("[MAP/END]", uWS::TEXT);
+    });
+
+    std::cout << "Started chunked canvas send in " << num_chunks << " chunks" << std::endl;
+}
 
 // Sets a pixel in the bit array at (x, y) to the specified color (1 = painted, 0 = not painted)
 void setPixel(int x, int y, bool color) {
@@ -34,20 +75,6 @@ void setPixel(int x, int y, bool color) {
     } else {
         canvas_bits[byte_index] &= ~(1 << bit_pos); // Set bit to 0
     }
-}
-
-// Sends the entire canvas state to a client
-void sendCanvas(WebSocketType* ws) {
-    // Convert the byte array to a std::string
-    std::string canvas_data(reinterpret_cast<const char*>(canvas_bits.data()), canvas_bits.size());
-
-    // Add [CANVAS] prefix
-    canvas_data = "[CANVAS]" + canvas_data;
-
-    std::cout << "Sending canvas 🗺️ data to client: " << canvas_data.size() << " bytes" << std::endl;
-
-    // Send to client as TEXT frame
-    ws->send(canvas_data, uWS::TEXT);
 }
 
 int main() {
@@ -80,7 +107,7 @@ int main() {
                     std::string wake = "[WAKE]";
                     ws->send(wake, uWS::TEXT);
 
-                    sendCanvas(ws); // Send initial canvas state
+                    sendCanvasInChunks(ws); // Send initial canvas state
                 },
                 .message = [](WebSocketType* ws, std::string_view message, uWS::OpCode opCode) {
                     // when message is long don't process it
@@ -88,6 +115,24 @@ int main() {
                         std::cout << "Received long message, ignoring" << std::endl;
                         return;
                     }
+
+                    if (message.starts_with("[MAP/RESEND:")) {
+                        int chunk_id = std::stoi(std::string(message.substr(12)));
+                    
+                        std::scoped_lock lock(chunk_mutex);
+                        if (cached_chunks.count(chunk_id)) {
+                            std::string retry_chunk = cached_chunks[chunk_id];
+                            uWS::Loop::get()->defer([ws, retry_chunk]() {
+                                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                                ws->send(retry_chunk, uWS::TEXT);
+                            });
+                            std::cout << "Client requested resend of chunk " << chunk_id << std::endl;
+                        } else {
+                            std::cout << "Client requested missing chunk " << chunk_id << ", not found in cache" << std::endl;
+                        }
+                        return;
+                    }
+                    
 
                     // if message contains "STOP]", close the connection, FlipperHTTP sends [SOCKET/STOP] when closing
                     if (message.find("STOP]") != std::string::npos) {
@@ -98,7 +143,7 @@ int main() {
 
                     if (message.find("[MAP/SYNC]") != std::string::npos) {
                         std::cout << "Client requested canvas sync" << std::endl;
-                        sendCanvas(ws); // Send full canvas back to the requesting client
+                        sendCanvasInChunks(ws); // Send full canvas back to the requesting client
                         return;
                     }
 
