@@ -7,11 +7,11 @@
 // Canvas configuration
 const int CANVAS_WIDTH = 550;
 const int CANVAS_HEIGHT = 550;
-const size_t CANVAS_BITS_SIZE = ((CANVAS_WIDTH * CANVAS_HEIGHT + 7) / 8); // 37,813 bytes
+const size_t CANVAS_BITS_SIZE = ((CANVAS_WIDTH * CANVAS_HEIGHT + 7) / 8); // 1 byte = 8 bits
 std::vector<uint8_t> canvas_bits(CANVAS_BITS_SIZE, 0); // Bit array for canvas
 
 struct MyUserData {
-    // Placeholder for per-socket data if needed
+    std::string flipper_name;
 };
 
 using WebSocketType = uWS::WebSocket<false, true, MyUserData>; // Server, with SSL support
@@ -50,17 +50,57 @@ int main() {
             {
                 .compression = uWS::SHARED_COMPRESSOR,
                 .maxPayloadLength = 1 * 1024, // For incoming messages (5 bytes < 1024)
-                .idleTimeout = 10,
+                .idleTimeout = 120,
                 .open = [](WebSocketType* ws) {
                     std::string ip = std::string(ws->getRemoteAddressAsText());
                     std::cout << "New client connected from " << ip << std::endl;
 
                     clients.push_back(ws);
-                    std::string hello = "Hello world!";
-                    ws->send(hello, uWS::TEXT);
+
+                    // ask for the needed information e.g for now: flipper name
+                    std::string wake = "[WAKE]";
+                    ws->send(wake, uWS::TEXT);
+
                     sendCanvas(ws); // Send initial canvas state
                 },
                 .message = [](WebSocketType* ws, std::string_view message, uWS::OpCode opCode) {
+                    // when message is long don't process it
+                    if (message.size() > 50) {
+                        std::cout << "Received long message, ignoring" << std::endl;
+                        return;
+                    }
+
+                    // if message contains "STOP]", close the connection, FlipperHTTP sends [SOCKET/STOP] when closing
+                    if (message.find("STOP]") != std::string::npos) {
+                        std::cout << "Received STOP command: " << message << ", closing connection" << std::endl;
+                        ws->close();
+                        return;
+                    }
+
+                    if (message.find("[MAP/SYNC]") != std::string::npos) {
+                        std::cout << "Client requested canvas sync" << std::endl;
+                        sendCanvas(ws); // Send full canvas back to the requesting client
+                        return;
+                    }
+
+                    if (message.starts_with("[NAME]")) {
+                        // Set flipper name
+                        std::string new_name(message.substr(6)); // after "[NAME]"
+
+                        new_name.erase(std::remove_if(new_name.begin(), new_name.end(), ::isspace), new_name.end());
+                        if (new_name.size() > 10) {
+                            new_name = new_name.substr(0, 10);
+                        }
+                        if (new_name.empty()) {
+                            std::cout << "Invalid name received, ignoring" << std::endl;
+                            return;
+                        }
+
+                        ws->getUserData()->flipper_name = new_name;
+                        std::cout << "Client set name to [" << new_name << "]" << std::endl;
+                        return;
+                    }
+
                     if (message.size() == 5) {
                         // Parse 5-byte message: x (2 bytes), y (2 bytes), color (1 byte)
                         uint16_t x = static_cast<uint16_t>(static_cast<uint8_t>(message[0])) |
@@ -81,9 +121,14 @@ int main() {
                             std::cout << "Out-of-bounds pixel update: (" << x << ", " << y << ")"
                                       << std::endl;
                         }
+                        return;
                     } else {
                         std::cout << "Invalid message size: " << message.size() << " bytes (expected 5) " << message
                                   << std::endl;
+
+                        // close the connection, for now to test
+                        ws->close();
+                        return;
                     }
                 },
                 .close = [](WebSocketType* ws, int /*code*/, std::string_view /*message*/) {
