@@ -317,10 +317,10 @@ int32_t painters_app(void* p) {
                     changed = true;
                 }
                 if (changed) {
-                    // Send the updated pixel to the server, byte index and color, Color 0 or 1
+                    // Send the updated pixel to the server
                     char message[64];
-                    snprintf(message, sizeof(message), "[PIXEL]Bi:%d,c:%d", byte_index, (state->painted_bytes[byte_index] & (1 << bit_index)) ? 1 : 0);
-                    
+                    snprintf(message, sizeof(message), "[PIXEL]x:%d,y:%d,c:%d", state->cursor.x, state->cursor.y, (state->painted_bytes[byte_index] & (1 << bit_index)) ? 1 : 0);
+
                     FURI_LOG_I(TAG, "Sending pixel update: %s", message);
 
                     // Send the message to the server
