@@ -317,17 +317,18 @@ int32_t painters_app(void* p) {
                     changed = true;
                 }
                 if (changed) {
-                    // Send the updated pixel to the server
-                    uint8_t message[5];
-                    message[0] = state->cursor.x & 0xFF;
-                    message[1] = (state->cursor.x >> 8) & 0xFF;
-                    message[2] = state->cursor.y & 0xFF;
-                    message[3] = (state->cursor.y >> 8) & 0xFF;
-                    message[4] = (state->painted_bytes[byte_index] & (1 << bit_index)) ? 1 : 0;
+                    // Send the updated pixel to the server, byte index and color, Color 0 or 1
+                    char message[64];
+                    snprintf(message, sizeof(message), "[PIXEL]Bi:%d,c:%d", byte_index, (state->painted_bytes[byte_index] & (1 << bit_index)) ? 1 : 0);
+                    
+                    FURI_LOG_I(TAG, "Sending pixel update: %s", message);
 
-                    FURI_LOG_I(TAG, "Sending pixel update: (%d, %d, %d)", state->cursor.x, state->cursor.y,
-                        message[4]);
-                    flipper_http_send_data(fhttp, (const char*)message);
+                    // Send the message to the server
+                    if (!flipper_http_send_data(fhttp, message)) {
+                        FURI_LOG_E(TAG, "Failed to send pixel update to server");
+                    } else {
+                        FURI_LOG_I(TAG, "Pixel update sent");
+                    }
                 }
 
             } break;
