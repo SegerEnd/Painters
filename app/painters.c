@@ -6,8 +6,8 @@
 #include <flipper_http/flipper_http.h>
 
 #define TAG                   "PAINTERS"
-#define MAP_WIDTH             400
-#define MAP_HEIGHT            400
+#define MAP_WIDTH             200
+#define MAP_HEIGHT            200
 #define SCREEN_WIDTH          128
 #define SCREEN_HEIGHT         64
 #define PAINTED_BYTES_SIZE    ((MAP_WIDTH * MAP_HEIGHT + 7) / 8) // 1 byte = 8 bits
@@ -179,6 +179,10 @@ static void cycle_zoom(PaintData* state) {
     state->zoom_message_start_time = furi_get_tick();
 }
 
+static bool collecting_canvas = false;
+static size_t received_bytes = 0;
+static uint16_t expected_chunk = 0;
+
 static bool game_start_websocket(FlipperHTTP* fhttp) {
     if(!fhttp) {
         FURI_LOG_E(TAG, "FlipperHTTP is NULL");
@@ -216,6 +220,48 @@ static void send_pixel(FlipperHTTP* fhttp, int x, int y, int color) {
     }
 }
 
+void paint_receive_canvas(PaintData* state, size_t response_len) {
+    char* response = state->fhttp->last_response;
+    if(strncmp(response, "[MAP/SEND]", 10) == 0) {
+        collecting_canvas = true;
+        received_bytes = 0;
+        expected_chunk = 0;
+        memset(state->painted_bytes, 0, PAINTED_BYTES_SIZE);
+        FURI_LOG_I(TAG, "Started receiving canvas");
+    } else if(strncmp(response, "[MAP/CHUNK:", 11) == 0) {
+        uint16_t chunk_id = atoi(response + 11); // extract chunk id
+        char* data_start = strstr(response, "]") + 1;
+        size_t chunk_size = response_len - (data_start - response);
+
+        if(chunk_id != expected_chunk) {
+            FURI_LOG_E(
+                TAG,
+                "Missing chunk! Expected %u, got %u, Asking server again",
+                expected_chunk,
+                chunk_id);
+            // Ask server to resend
+            char resend_request[64];
+            snprintf(resend_request, sizeof(resend_request), "[MAP/RESEND:%u]", expected_chunk);
+            flipper_http_send_data(state->fhttp, resend_request);
+            return;
+        }
+
+        // Copy chunk into painted_bytes
+        size_t copy_len = chunk_size;
+        if(received_bytes + copy_len > PAINTED_BYTES_SIZE) {
+            copy_len = PAINTED_BYTES_SIZE - received_bytes;
+        }
+        memcpy(state->painted_bytes + received_bytes, data_start, copy_len);
+        received_bytes += copy_len;
+        expected_chunk++;
+        FURI_LOG_I(TAG, "Received chunk %u (%zu bytes total)", chunk_id, received_bytes);
+
+    } else if(strncmp(response, "[MAP/END]", 9) == 0) {
+        collecting_canvas = false;
+        FURI_LOG_I(TAG, "Finished receiving canvas (%zu bytes)", received_bytes);
+    }
+}
+
 long int websocket_listener_thread(void* context) {
     PaintData* state = (PaintData*)context;
     FlipperHTTP* fhttp = state->fhttp;
@@ -226,28 +272,27 @@ long int websocket_listener_thread(void* context) {
         }
         if(fhttp && fhttp->last_response && strlen(fhttp->last_response) > 0 &&
            strcmp(fhttp->last_response, state->last_server_response) != 0) {
-            // Parse and handle server messages here
-
+            // New server message received
             FURI_LOG_I(TAG, "Received server message: %s", fhttp->last_response);
 
-            // Clear the last response content
-            free(state->last_server_response);
+            // If last message contains [MAP only save the part between brackets, including brackets
+            if(strncmp(fhttp->last_response, "[MAP", 4) == 0) {
+                paint_receive_canvas(state, strlen(fhttp->last_response));
 
-            // set last_server_response to the fhttp->last_response to check if it is not twice updated, dont keep the old pointer
-            // when it starts with [CANVAS] only store [CANVAS] and ignore the rest because its a big response
-            if(strncmp(fhttp->last_response, "[CANVAS]", 8) == 0) {
-                state->last_server_response = (char*)malloc(8 + 1);
-                strncpy(state->last_server_response, fhttp->last_response, 8);
-
-                FURI_LOG_I(TAG, "Received canvas data: %s", state->last_server_response);
-
-                char* data = strstr(fhttp->last_response, "[CANVAS]") + 8;
-                memcpy(state->painted_bytes, data, PAINTED_BYTES_SIZE);
+                char* start = strchr(fhttp->last_response, '[');
+                char* end = strrchr(fhttp->last_response, ']');
+                if(start && end && end > start) {
+                    size_t len = end - start + 1;
+                    strncpy(state->last_server_response, start, len);
+                    state->last_server_response[len] = '\0'; // Null-terminate the string
+                }
             } else {
-                state->last_server_response = strdup(fhttp->last_response);
+                // Save the last server response
+                strncpy(state->last_server_response, fhttp->last_response, RX_BUF_SIZE - 1);
+                state->last_server_response[RX_BUF_SIZE - 1] = '\0'; // Null-terminate the string
             }
 
-            // Ask view port to redraw
+            // Redraw viewport (maybe you show some UI progress)
             view_port_update(state->vp);
         }
         furi_delay_ms(50); // Sleep a little
