@@ -30,10 +30,30 @@ RUN g++ -std=c++23 -IuWebSockets/src -IuWebSockets/uSockets/src -o painters_serv
 # Runtime stage
 FROM ubuntu:latest
 
+ENV TZ=Europe/Amsterdam
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -yq tzdata && \
+    ln -fs /usr/share/zoneinfo/$TZ /etc/localtime && \
+    dpkg-reconfigure -f noninteractive tzdata
+
 # Copy the compiled binary from the build stage
 COPY --from=build /painters_server app/painters_server
 
 EXPOSE 80
+
+# Remove downloaded packages and clean up image
+RUN apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get autoremove -y && \
+    rm -rf /var/cache/apt/archives && \
+    rm -rf /var/cache/apt/archives/lock && \
+    rm -rf /var/lib/dpkg/lock && \
+    rm -rf /var/lib/dpkg/lock-frontend && \
+    rm -rf /var/lib/apt/lists/* && \
+    rm -rf /tmp/* && \
+    rm -rf /var/tmp/*
 
 WORKDIR /app
 

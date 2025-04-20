@@ -11,14 +11,14 @@
 
 #define WEBSOCKET_PORT 80
 #define MAX_CLIENTS 75
-#define SAVE_INTERVAL (5 * 60) // 5 minutes
+#define SAVE_INTERVAL (10 * 60) // 10 minutes
 #define PIXEL_PLACE_TIMEOUT   1000 // 1 second in milliseconds
 
 // Canvas configuration
 const int CANVAS_WIDTH = 500;
 const int CANVAS_HEIGHT = 500;
 const size_t PAINTED_BYTES_SIZE = ((CANVAS_WIDTH * CANVAS_HEIGHT + 7) / 8); // 1 byte = 8 bits
-
+const int MAX_PAYLOAD_SIZE = 1280;
 const int CHUNK_SEND_DELAY_MS = 250; // Delay between sending chunks in milliseconds
 
 struct MyUserData {
@@ -39,12 +39,20 @@ using WebSocketType = uWS::WebSocket<false, true, MyUserData>; // Server, with S
 // Global vector to keep track of all connected clients
 std::vector<WebSocketType*> clients;
 
-void sendCanvasInChunks(WebSocketType* ws) {
-    std::cout << "Sending canvas 🗺️ to client..." << std::endl;
+// funxtion to get the name of the client if not unknown
+std::string getClientName(WebSocketType* ws) {
+    std::string client_name = ws->getUserData()->flipper_name;
+    if (client_name.empty()) {
+        client_name = "Unknown";
+    }
+    return client_name;
+}
+
+void sendCanvasInChunks(WebSocketType* ws) {    
+    std::cout << "Sending canvas 🗺️ to client " << getClientName(ws) << "..." << std::endl;
     ws->send("[MAP/SEND]", uWS::TEXT);
 
     size_t total_size = PAINTED_BYTES_SIZE;
-    const int MAX_PAYLOAD_SIZE = 1280;
 
     size_t start = 0;
     size_t chunk_id = 0;
@@ -155,6 +163,10 @@ int main() {
 
         while (keep_saving) {
             std::this_thread::sleep_for(save_interval);
+            // check if there are any clients connected if not, don't save
+            if (clients.empty()) {
+                continue;
+            }
             saveCanvasToFile(maps_path);
         }
     });
@@ -182,6 +194,11 @@ int main() {
 
                     // std::string wake = "[WAKE]";
                     // ws->send(wake, uWS::TEXT);
+
+                    // Send a wake with all neeced information like, canvas size, timeout time, payload size, etc
+                    std::string wake = "[WAKE:cw:" + std::to_string(CANVAS_WIDTH) + ":ch:" + std::to_string(CANVAS_HEIGHT) +
+                        ":t:" + std::to_string(PIXEL_PLACE_TIMEOUT) + ":ps:" + std::to_string(MAX_PAYLOAD_SIZE) + "]";
+                    ws->send(wake, uWS::TEXT);
                 },
                 .message = [](WebSocketType* ws, std::string_view message, uWS::OpCode opCode) {
                     // when message is long don't process it
@@ -270,9 +287,10 @@ int main() {
                             // ws->send(who_are_you, uWS::TEXT);
                         }
                     
-                        std::cout << client_name << ": Set pixel (" << x << "," << y << ") "
+                        std::cout << client_name << ": Set pixel (" << x << "," << y << ") to "
                                   << (color ? "black" : "white") << std::endl;
                     
+                        // send the updated pixel to all connected clients
                         for (auto client : clients) {
                             client->send(message, opCode);
                         }
