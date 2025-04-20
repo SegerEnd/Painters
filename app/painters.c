@@ -13,6 +13,7 @@
 #define PAINTED_BYTES_SIZE    ((MAP_WIDTH * MAP_HEIGHT + 7) / 8) // 1 byte = 8 bits
 #define ZOOM_MESSAGE_DURATION 2000 // 2 seconds in milliseconds
 #define PIXEL_PLACE_TIMEOUT   1050 // 1.05 second in milliseconds
+#define MAP_SYNC_INTERVAL     (1.5 * 60 * 1000) // 1.5 minutes in milliseconds
 #define WEBSOCKET_URL         "ws://painters.segerend.nl"
 #define WEBSOCKET_PORT        80
 #define CHUNK_SIZE            1280
@@ -240,7 +241,7 @@ long int websocket_listener_thread(void* context) {
     while(furi_thread_flags_get() != WorkerEvtStop) {
         furi_mutex_acquire(state->mutex, FuriWaitForever);
 
-        if(fhttp && fhttp->last_response && strlen(fhttp->last_response) > 0) {
+        if(fhttp->last_response && strlen(fhttp->last_response) > 0) {
             if(!state->last_server_response || strcmp(fhttp->last_response, state->last_server_response) != 0) {
                 FURI_LOG_I(TAG, "Received message: %s", fhttp->last_response);
 
@@ -300,11 +301,19 @@ long int websocket_listener_thread(void* context) {
                     }
                 }
 
+                // When [SOCKET/STOP] is received, stop the websocket
+                else if(strncmp(message, "[SOCKET/STOPPED]", 13) == 0) {
+                    FURI_LOG_I(TAG, "Received [SOCKET/STOPPED] message, stopping websocket connection");
+                    flipper_http_websocket_stop(fhttp);
+                    state->connected = 0; // Set connected to 0, disconnected from server
+                    view_port_update(state->vp);
+                }
+
                 // Update last_server_response
                 if(state->last_server_response) free(state->last_server_response);
                 state->last_server_response = strdup(fhttp->last_response);
 
-                // if response is [MAP/END], set connected to 2, little bit dirty, maybe also check later if all chunks are received
+                // if response is [MAP/END], set connected to 2, little bit dirty, maybe also check in the future if all chunks are received
                 if(strcmp(fhttp->last_response, "[MAP/END]") == 0) {
                     state->connected = 2; // Set connected to 2, connected to server and loaded the canvas
                 }
@@ -316,9 +325,7 @@ long int websocket_listener_thread(void* context) {
 
         furi_mutex_release(state->mutex);
 
-        if (state->connected > 1) {
-            furi_delay_ms(10);
-        }
+        furi_delay_ms(10);
     }
     return 0;
 }
@@ -432,6 +439,16 @@ int32_t painters_app(void* p) {
         bool should_update = false;
 
         if(event.type == InputTypeShort) {
+            if (state->connected == 2 && event.key != InputKeyBack) {
+                // send a [MAP/SYNC] every 10 minutes to the server
+                // to keep the connection alive and synchronize the map, only when input is received
+                static uint32_t last_sync_time = 0;
+                uint32_t current_time = furi_get_tick();
+                if (current_time - last_sync_time > MAP_SYNC_INTERVAL) {
+                    flipper_http_send_data(fhttp, "[MAP/SYNC]");
+                    last_sync_time = current_time;
+                }
+            }
             switch(event.key) {
             case InputKeyUp:
                 state->cursor.y--;
