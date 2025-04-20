@@ -41,52 +41,41 @@ std::vector<WebSocketType*> clients;
 
 void sendCanvasInChunks(WebSocketType* ws) {
     std::cout << "Sending canvas 🗺️ to client..." << std::endl;
-    ws->send("[MAP/SEND]", uWS::TEXT); // Tell client we're starting canvas
+    ws->send("[MAP/SEND]", uWS::TEXT);
 
     size_t total_size = PAINTED_BYTES_SIZE;
-    
-    // Maximum payload size including header
     const int MAX_PAYLOAD_SIZE = 1280;
-    
-    size_t num_chunks = (total_size + MAX_PAYLOAD_SIZE - 1) / MAX_PAYLOAD_SIZE;
 
-    // Debug the size of painted_bytes
-    // std::cout << "Canvas size: " << total_size << " bytes." << std::endl;
+    size_t start = 0;
+    size_t chunk_id = 0;
 
-    for (size_t chunk_index = 0; chunk_index < num_chunks; ++chunk_index) {
-        size_t start = chunk_index * MAX_PAYLOAD_SIZE;
-        size_t end = std::min(start + MAX_PAYLOAD_SIZE, total_size);
-        size_t chunk_size = end - start;
+    while (start < total_size) {
+        size_t available_space = MAX_PAYLOAD_SIZE;
 
-        // Create the chunk header with the chunk index (dynamic length)
-        std::string chunk_header = "[MAP/CHUNK:" + std::to_string(chunk_index) + "]";
-
-        // Calculate the actual header length based on the chunk index
+        // Create header with chunk id and start offset
+        std::string chunk_header = "[MAP/CHUNK:" + std::to_string(chunk_id) + ":" + std::to_string(start) + "]";
         size_t header_length = chunk_header.size();
+        available_space -= header_length;
 
-        // Calculate the chunk data size (payload) after accounting for header size
-        size_t remaining_payload_size = MAX_PAYLOAD_SIZE - header_length;
+        size_t bytes_can_send = available_space / 2;
+        size_t end = std::min(start + bytes_can_send, total_size);
 
-        // Create the chunk message that includes the header and the chunk data
         std::string chunk_message = chunk_header;
 
-        // Convert the chunk data into a string of hex numbers (human-readable format)
         for (size_t i = start; i < end; ++i) {
             char hex_byte[3];
             snprintf(hex_byte, sizeof(hex_byte), "%02X", painted_bytes[i]);
             chunk_message += hex_byte;
         }
-        // Send the chunk (header + data) as a single message
+
         ws->send(chunk_message, uWS::TEXT);
 
-        // std::cout << "Sent " << chunk_message << " number: " << (chunk_index + 1) << " of " << num_chunks
-        //           << " (" << chunk_size << " bytes)" << std::endl;
+        start = end;
+        chunk_id++;
     }
 
-    // Notify client that we have finished sending the canvas
-    ws->send("[MAP/END]", uWS::TEXT); // Tell client we're finished sending
+    ws->send("[MAP/END]", uWS::TEXT);
 }
-
 
 // Sets a pixel in the bit array at (x, y) to the specified color (1 = painted, 0 = not painted)
 void setPixel(int x, int y, bool color) {

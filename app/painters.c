@@ -15,7 +15,6 @@
 #define PIXEL_PLACE_TIMEOUT   1050 // 1.05 second in milliseconds
 #define WEBSOCKET_URL         "ws://painters.segerend.nl"
 #define WEBSOCKET_PORT        80
-
 #define CHUNK_SIZE            1280
 
 
@@ -248,36 +247,33 @@ long int websocket_listener_thread(void* context) {
                 const char* message = fhttp->last_response;
 
                 // Check if it starts with [MAP/CHUNK:
-                if(strncmp(message, "[MAP/CHUNK:", 11) == 0) {
+                if (strncmp(message, "[MAP/CHUNK:", 11) == 0) {
+                    const char* first_colon = strchr(message + 11, ':');
                     const char* bracket_pos = strchr(message, ']');
-                    if(bracket_pos) {
-                        // Extract chunk id
-                        int chunk_id = atoi(message + 11);
+                    if (first_colon && bracket_pos) {
+                        // Extract chunk id and offset
+                        // int chunk_id = atoi(message + 11);
+                        int start_pos = atoi(first_colon + 1);
                 
-                        // Calculate where data starts
-                        const uint8_t* data = (const uint8_t*)(bracket_pos + 1);
-                        size_t data_len = strlen((const char*)data);
+                        if (start_pos < PAINTED_BYTES_SIZE) {
+                            const uint8_t* data = (const uint8_t*)(bracket_pos + 1);
+                            size_t data_len = strlen((const char*)data);
                 
-                        // Each chunk's position
-                        size_t start_pos = chunk_id * CHUNK_SIZE;
-                
-                        if(start_pos < PAINTED_BYTES_SIZE) {
                             size_t num_bytes = data_len / 2;
-                            if(start_pos + num_bytes > PAINTED_BYTES_SIZE) {
+                            if (start_pos + num_bytes > PAINTED_BYTES_SIZE) {
                                 num_bytes = PAINTED_BYTES_SIZE - start_pos;
                             }
                 
-                            // Convert hex to bytes
-                            for(size_t i = 0; i < num_bytes; i++) {
+                            for (size_t i = 0; i < num_bytes; ++i) {
                                 char byte_str[3] = { data[i*2], data[i*2+1], '\0' };
                                 uint8_t byte = (uint8_t)strtoul(byte_str, NULL, 16);
                                 state->painted_bytes[start_pos + i] = byte;
                             }
-
+                
                             chunk_count++;
                         }
                     }
-                }
+                }                
 
                 //  if [PIXEL]x:y:c: then update the pixel in the painted bytes array
                 else if(strncmp(message, "[PIXEL]", 7) == 0) {
