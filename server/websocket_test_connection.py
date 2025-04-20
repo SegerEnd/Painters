@@ -4,7 +4,7 @@ import time
 import socket
 
 async def connect():
-    uri = "ws://painters.segerend.nl"
+    uri = "ws://painters.segerend.nl/"
     while True:
         try:
             # Attempt to establish a WebSocket connection
@@ -12,7 +12,7 @@ async def connect():
                 print("Connected to server")
                 
                 # Send an initial message
-                await websocket.send("Hello, Server!")
+                await websocket.send("[NAME]Python")
 
                 # Continuously receive and print messages from the server
                 while True:

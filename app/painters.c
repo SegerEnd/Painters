@@ -15,6 +15,8 @@
 #define WEBSOCKET_URL         "ws://painters.segerend.nl"
 #define WEBSOCKET_PORT        80
 
+#define CHUNK_SIZE            1024 // Server's CHUNK_SIZE (128 - 14 header)
+
 typedef enum {
     ZoomOut = 1,
     Zoom1x = 4,
@@ -39,7 +41,7 @@ typedef struct {
     uint8_t* painted_bytes;
     ZoomLevel zoom;
     uint32_t zoom_message_start_time;
-    bool connected;
+    int connected;
     char* last_server_response;
 } PaintData;
 
@@ -127,14 +129,18 @@ void paint_draw_callback(Canvas* canvas, void* ctx) {
 
     furi_mutex_acquire(state->mutex, FuriWaitForever);
 
-    if(state->connected) {
+    if(state->connected == 2) {
         canvas_clear(canvas);
         draw_cursor(canvas, state);
         draw_board(canvas, state);
         draw_ui(canvas, state);
-    } else {
+    } else if(state->connected == 0) {
         canvas_set_font(canvas, FontPrimary);
         canvas_draw_str(canvas, 1, 10, "Not connected to server");
+    } else if(state->connected == 1) {
+        canvas_set_font(canvas, FontPrimary);
+        canvas_draw_str(canvas, 1, 10, "Connected to server");
+        canvas_draw_str(canvas, 1, 20, "Loading canvas...");
     }
     furi_mutex_release(state->mutex);
 }
@@ -179,10 +185,6 @@ static void cycle_zoom(PaintData* state) {
     state->zoom_message_start_time = furi_get_tick();
 }
 
-static bool collecting_canvas = false;
-static size_t received_bytes = 0;
-static uint16_t expected_chunk = 0;
-
 static bool game_start_websocket(FlipperHTTP* fhttp) {
     if(!fhttp) {
         FURI_LOG_E(TAG, "FlipperHTTP is NULL");
@@ -220,84 +222,73 @@ static void send_pixel(FlipperHTTP* fhttp, int x, int y, int color) {
     }
 }
 
-void paint_receive_canvas(PaintData* state, size_t response_len) {
-    char* response = state->fhttp->last_response;
-    if(strncmp(response, "[MAP/SEND]", 10) == 0) {
-        collecting_canvas = true;
-        received_bytes = 0;
-        expected_chunk = 0;
-        memset(state->painted_bytes, 0, PAINTED_BYTES_SIZE);
-        FURI_LOG_I(TAG, "Started receiving canvas");
-    } else if(strncmp(response, "[MAP/CHUNK:", 11) == 0) {
-        uint16_t chunk_id = atoi(response + 11); // extract chunk id
-        char* data_start = strstr(response, "]") + 1;
-        size_t chunk_size = response_len - (data_start - response);
-
-        if(chunk_id != expected_chunk) {
-            FURI_LOG_E(
-                TAG,
-                "Missing chunk! Expected %u, got %u, Asking server again",
-                expected_chunk,
-                chunk_id);
-            // Ask server to resend
-            char resend_request[64];
-            snprintf(resend_request, sizeof(resend_request), "[MAP/RESEND:%u]", expected_chunk);
-            flipper_http_send_data(state->fhttp, resend_request);
-            return;
-        }
-
-        // Copy chunk into painted_bytes
-        size_t copy_len = chunk_size;
-        if(received_bytes + copy_len > PAINTED_BYTES_SIZE) {
-            copy_len = PAINTED_BYTES_SIZE - received_bytes;
-        }
-        memcpy(state->painted_bytes + received_bytes, data_start, copy_len);
-        received_bytes += copy_len;
-        expected_chunk++;
-        FURI_LOG_I(TAG, "Received chunk %u (%zu bytes total)", chunk_id, received_bytes);
-
-    } else if(strncmp(response, "[MAP/END]", 9) == 0) {
-        collecting_canvas = false;
-        FURI_LOG_I(TAG, "Finished receiving canvas (%zu bytes)", received_bytes);
-    }
-}
-
 long int websocket_listener_thread(void* context) {
     PaintData* state = (PaintData*)context;
     FlipperHTTP* fhttp = state->fhttp;
 
+    uint32_t chunk_count = 0;
+
     while(furi_thread_flags_get() != WorkerEvtStop) {
-        if(!state->last_server_response) {
-            state->last_server_response = (char*)malloc(RX_BUF_SIZE);
-        }
-        if(fhttp && fhttp->last_response && strlen(fhttp->last_response) > 0 &&
-           strcmp(fhttp->last_response, state->last_server_response) != 0) {
-            // New server message received
-            FURI_LOG_I(TAG, "Received server message: %s", fhttp->last_response);
+        furi_mutex_acquire(state->mutex, FuriWaitForever);
 
-            // If last message contains [MAP only save the part between brackets, including brackets
-            if(strncmp(fhttp->last_response, "[MAP", 4) == 0) {
-                paint_receive_canvas(state, strlen(fhttp->last_response));
+        if(fhttp && fhttp->last_response && strlen(fhttp->last_response) > 0) {
+            if(!state->last_server_response || strcmp(fhttp->last_response, state->last_server_response) != 0) {
+                FURI_LOG_I(TAG, "Received message: %s", fhttp->last_response);
 
-                char* start = strchr(fhttp->last_response, '[');
-                char* end = strrchr(fhttp->last_response, ']');
-                if(start && end && end > start) {
-                    size_t len = end - start + 1;
-                    strncpy(state->last_server_response, start, len);
-                    state->last_server_response[len] = '\0'; // Null-terminate the string
+                const char* message = fhttp->last_response;
+
+                // Check if it starts with [MAP/CHUNK:
+                if(strncmp(message, "[MAP/CHUNK:", 11) == 0) {
+                    const char* bracket_pos = strchr(message, ']');
+                    if(bracket_pos) {
+                        // Extract chunk id
+                        int chunk_id = atoi(message + 11);
+                
+                        // Calculate where data starts
+                        const uint8_t* data = (const uint8_t*)(bracket_pos + 1);
+                        size_t data_len = strlen((const char*)data);
+                
+                        // Each chunk's position
+                        size_t start_pos = chunk_id * CHUNK_SIZE;
+                
+                        if(start_pos < PAINTED_BYTES_SIZE) {
+                            size_t num_bytes = data_len / 2;
+                            if(start_pos + num_bytes > PAINTED_BYTES_SIZE) {
+                                num_bytes = PAINTED_BYTES_SIZE - start_pos;
+                            }
+                
+                            // Convert hex to bytes
+                            for(size_t i = 0; i < num_bytes; i++) {
+                                char byte_str[3] = { data[i*2], data[i*2+1], '\0' };
+                                uint8_t byte = (uint8_t)strtoul(byte_str, NULL, 16);
+                                state->painted_bytes[start_pos + i] = byte;
+                            }
+
+                            chunk_count++;
+                        }
+                    }
                 }
-            } else {
-                // Save the last server response
-                strncpy(state->last_server_response, fhttp->last_response, RX_BUF_SIZE - 1);
-                state->last_server_response[RX_BUF_SIZE - 1] = '\0'; // Null-terminate the string
+
+                // Update last_server_response
+                if(state->last_server_response) free(state->last_server_response);
+                state->last_server_response = strdup(fhttp->last_response);
+
+                // if response is [MAP/END], set connected to 2, little bit dirty, maybe also check later if all chunks are received
+                if(strcmp(fhttp->last_response, "[MAP/END]") == 0) {
+                    state->connected = 2; // Set connected to 2, connected to server and loaded the canvas
+                }
+
+                // Redraw screen
+                view_port_update(state->vp);
             }
-
-            // Redraw viewport (maybe you show some UI progress)
-            view_port_update(state->vp);
         }
-        furi_delay_ms(50); // Sleep a little
-    }
 
+        furi_mutex_release(state->mutex);
+
+        if (state->connected > 1) {
+            furi_delay_ms(10);
+        }
+    }
     return 0;
 }
 
@@ -389,12 +380,11 @@ int32_t painters_app(void* p) {
         FURI_LOG_E(TAG, "Failed to start websocket connection");
         return -1;
     } else {
-        state->connected = true;
-        view_port_update(vp);
-
         char name[16];
         snprintf(name, sizeof(name), "[NAME]%s", furi_hal_version_get_name_ptr());
         flipper_http_send_data(fhttp, name);
+
+        state->connected = 1; // Set connected to 1, connected to server but not yet loaded the canvas
     }
 
     FuriThread* ws_thread = furi_thread_alloc();
