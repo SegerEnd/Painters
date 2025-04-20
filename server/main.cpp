@@ -14,7 +14,7 @@ const int CANVAS_HEIGHT = 200;
 const size_t CANVAS_BITS_SIZE = ((CANVAS_WIDTH * CANVAS_HEIGHT + 7) / 8); // 1 byte = 8 bits
 std::vector<uint8_t> canvas_bits(CANVAS_BITS_SIZE, 0); // Bit array for canvas
 
-const int CHUNK_SEND_DELAY_MS = 75; // Delay between sending chunks in milliseconds
+const int CHUNK_SEND_DELAY_MS = 250; // Delay between sending chunks in milliseconds
 
 struct MyUserData {
     std::string flipper_name;
@@ -31,49 +31,52 @@ void sendCanvasInChunks(WebSocketType* ws) {
 
     size_t total_size = canvas_bits.size();
     
-    // Calculate adjusted chunk size to fit the 128 byte limit, accounting for the header
+    // Maximum payload size including header
     const int MAX_PAYLOAD_SIZE = 128;
-    const int HEADER_SIZE = 14;  // Size of the "[MAP/CHUNK:X]" header
-    const int CHUNK_SIZE = MAX_PAYLOAD_SIZE - HEADER_SIZE; // Adjusted chunk size
-
-    size_t num_chunks = (total_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    
+    size_t num_chunks = (total_size + MAX_PAYLOAD_SIZE - 1) / MAX_PAYLOAD_SIZE;
 
     // Check the size of canvas_bits to ensure it's non-empty
     std::cout << "Canvas size: " << total_size << " bytes." << std::endl;
 
     for (size_t chunk_index = 0; chunk_index < num_chunks; ++chunk_index) {
-        size_t start = chunk_index * CHUNK_SIZE;
-        size_t end = std::min(start + CHUNK_SIZE, total_size);
+        size_t start = chunk_index * MAX_PAYLOAD_SIZE;
+        size_t end = std::min(start + MAX_PAYLOAD_SIZE, total_size);
         size_t chunk_size = end - start;
 
-        // Create the chunk header
+        // Create the chunk header with the chunk index (dynamic length)
         std::string chunk_header = "[MAP/CHUNK:" + std::to_string(chunk_index) + "]";
-        
-        // Convert the chunk data into a string
-        std::string chunk_data(reinterpret_cast<char*>(canvas_bits.data() + start), chunk_size);
 
-        // Debugging: Print raw bytes of the chunk data in hexadecimal format
-        std::cout << "Chunk size: " << chunk_size << " bytes, Raw Data (hex): ";
-        for (size_t i = 0; i < chunk_size; ++i) {
-            printf("%02X ", static_cast<unsigned char>(chunk_data[i]));
+        // Calculate the actual header length based on the chunk index
+        size_t header_length = chunk_header.size();
+
+        // Calculate the chunk data size (payload) after accounting for header size
+        size_t remaining_payload_size = MAX_PAYLOAD_SIZE - header_length;
+
+        // Create the chunk message that includes the header and the chunk data
+        std::string chunk_message = chunk_header;
+
+        // Convert the chunk data into a string of hex numbers (human-readable format)
+        for (size_t i = start; i < end; ++i) {
+            char hex_byte[3];
+            snprintf(hex_byte, sizeof(hex_byte), "%02X", canvas_bits[i]);
+            chunk_message += hex_byte;
         }
-        std::cout << std::endl;
 
-        // Combine header and chunk data into a single message
-        std::string chunk_message = chunk_header + chunk_data;
+        // Print out the chunk information for debugging
+        std::cout << "Chunk number: " << chunk_index << ", of " << num_chunks << ", size: " << chunk_size << " bytes" << std::endl;
 
         // Send the chunk (header + data) as a single message
         ws->send(chunk_message, uWS::TEXT);
 
         std::cout << "Sent " << chunk_header << " number: " << chunk_index << " of " << num_chunks
                   << " (" << chunk_size << " bytes)" << std::endl;
-
-        // Wait a little to prevent flooding the client
-        std::this_thread::sleep_for(std::chrono::milliseconds(CHUNK_SEND_DELAY_MS));
     }
 
+    // Notify client that we have finished sending the canvas
     ws->send("[MAP/END]", uWS::TEXT); // Tell client we're finished sending
 }
+
 
 // Sets a pixel in the bit array at (x, y) to the specified color (1 = painted, 0 = not painted)
 void setPixel(int x, int y, bool color) {
@@ -118,8 +121,6 @@ int main() {
 
                     // std::string wake = "[WAKE]";
                     // ws->send(wake, uWS::TEXT);
-
-                    sendCanvasInChunks(ws); // Send initial canvas state
                 },
                 .message = [](WebSocketType* ws, std::string_view message, uWS::OpCode opCode) {
                     // when message is long don't process it
@@ -181,6 +182,8 @@ int main() {
 
                         ws->getUserData()->flipper_name = new_name;
                         std::cout << "Client set name to: " << new_name << std::endl;
+
+                        sendCanvasInChunks(ws); // Send initial canvas state
                         return;
                     }
 
