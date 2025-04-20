@@ -11,14 +11,15 @@
 // Canvas configuration
 const int CANVAS_WIDTH = 200;
 const int CANVAS_HEIGHT = 200;
-const size_t CANVAS_BITS_SIZE = ((CANVAS_WIDTH * CANVAS_HEIGHT + 7) / 8); // 1 byte = 8 bits
-std::vector<uint8_t> canvas_bits(CANVAS_BITS_SIZE, 0); // Bit array for canvas
+const size_t PAINTED_BYTES_SIZE = ((CANVAS_WIDTH * CANVAS_HEIGHT + 7) / 8); // 1 byte = 8 bits
 
 const int CHUNK_SEND_DELAY_MS = 250; // Delay between sending chunks in milliseconds
 
 struct MyUserData {
     std::string flipper_name;
 };
+
+uint8_t* painted_bytes = nullptr; // Global variable to hold the painted bytes (canvas)
 
 using WebSocketType = uWS::WebSocket<false, true, MyUserData>; // Server, with SSL support
 
@@ -29,14 +30,14 @@ void sendCanvasInChunks(WebSocketType* ws) {
     std::cout << "Sending canvas 🗺️ to client..." << std::endl;
     ws->send("[MAP/SEND]", uWS::TEXT); // Tell client we're starting canvas
 
-    size_t total_size = canvas_bits.size();
+    size_t total_size = PAINTED_BYTES_SIZE;
     
     // Maximum payload size including header
     const int MAX_PAYLOAD_SIZE = 128;
     
     size_t num_chunks = (total_size + MAX_PAYLOAD_SIZE - 1) / MAX_PAYLOAD_SIZE;
 
-    // Check the size of canvas_bits to ensure it's non-empty
+    // Debug the size of painted_bytes
     std::cout << "Canvas size: " << total_size << " bytes." << std::endl;
 
     for (size_t chunk_index = 0; chunk_index < num_chunks; ++chunk_index) {
@@ -59,17 +60,13 @@ void sendCanvasInChunks(WebSocketType* ws) {
         // Convert the chunk data into a string of hex numbers (human-readable format)
         for (size_t i = start; i < end; ++i) {
             char hex_byte[3];
-            snprintf(hex_byte, sizeof(hex_byte), "%02X", canvas_bits[i]);
+            snprintf(hex_byte, sizeof(hex_byte), "%02X", painted_bytes[i]);
             chunk_message += hex_byte;
         }
-
-        // Print out the chunk information for debugging
-        std::cout << "Chunk number: " << chunk_index << ", of " << num_chunks << ", size: " << chunk_size << " bytes" << std::endl;
-
         // Send the chunk (header + data) as a single message
         ws->send(chunk_message, uWS::TEXT);
 
-        std::cout << "Sent " << chunk_header << " number: " << chunk_index << " of " << num_chunks
+        std::cout << "Sent " << chunk_message << " number: " << (chunk_index + 1) << " of " << num_chunks
                   << " (" << chunk_size << " bytes)" << std::endl;
     }
 
@@ -81,22 +78,29 @@ void sendCanvasInChunks(WebSocketType* ws) {
 // Sets a pixel in the bit array at (x, y) to the specified color (1 = painted, 0 = not painted)
 void setPixel(int x, int y, bool color) {
     if (x < 0 || x >= CANVAS_WIDTH || y < 0 || y >= CANVAS_HEIGHT) {
-        return; // Out of bounds, ignore
+        std::cerr << "Invalid pixel coordinates: (" << x << ", " << y << ")" << std::endl;
+        return;
     }
-    size_t bit_index = static_cast<size_t>(y) * CANVAS_WIDTH + x;
-    size_t byte_index = bit_index / 8;
-    size_t bit_pos = bit_index % 8;
+
+    size_t index = (y * CANVAS_WIDTH + x) / 8;
+    size_t bit = (y * CANVAS_WIDTH + x) % 8;
+
     if (color) {
-        canvas_bits[byte_index] |= (1 << bit_pos); // Set bit to 1
+        painted_bytes[index] |= (1 << bit); // Set the bit to 1
     } else {
-        canvas_bits[byte_index] &= ~(1 << bit_pos); // Set bit to 0
+        painted_bytes[index] &= ~(1 << bit); // Set the bit to 0
     }
 }
 
 int main() {
     std::cout << "Starting WebSocket server... 🚀" << std::endl;
 
-    std::fill(canvas_bits.begin(), canvas_bits.end(), 0);
+    painted_bytes = (uint8_t*)malloc(PAINTED_BYTES_SIZE);
+    if(!painted_bytes) {
+        std::cerr << "Failed to allocate memory for painted bytes (canvas)" << std::endl;
+        return -1;
+    }
+    memset(painted_bytes, 0, PAINTED_BYTES_SIZE);
 
     uWS::App()
         .ws<MyUserData>(
@@ -130,28 +134,6 @@ int main() {
                     }
 
                     // if (message.starts_with("[MAP/RESEND:")) {
-                    //     int chunk_id = std::stoi(std::string(message.substr(12)));
-                    
-                    //     size_t total_size = canvas_bits.size();
-                    //     size_t num_chunks = (total_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
-                    
-                    //     if (chunk_id < 0 || static_cast<size_t>(chunk_id) >= num_chunks) {
-                    //         std::cout << "Invalid chunk ID requested: " << chunk_id << std::endl;
-                    //         return;
-                    //     }
-                    
-                    //     size_t start = chunk_id * CHUNK_SIZE;
-                    //     size_t end = std::min(start + CHUNK_SIZE, total_size);
-                    //     size_t chunk_size = end - start;
-                    
-                    //     std::string chunk_data(reinterpret_cast<char*>(canvas_bits.data() + start), chunk_size);
-                    
-                    //     uWS::Loop::get()->defer([ws, chunk_data]() {
-                    //         ws->send(chunk_data, uWS::TEXT);
-                    //     });
-                    
-                    //     std::cout << "Client requested resend of chunk " << chunk_id << ", resent" << std::endl;
-                    //     return;
                     // }
 
                     // if message contains "STOP]", close the connection, FlipperHTTP sends [SOCKET/STOP] when closing
@@ -256,7 +238,11 @@ int main() {
         .run();
 
     clients.clear();
-    canvas_bits.clear();
+
+    free(painted_bytes);
+    painted_bytes = nullptr;
+    
+    std::cout << "Server stopped." << std::endl;
 
     return 0;
 }
