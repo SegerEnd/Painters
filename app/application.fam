@@ -1,6 +1,6 @@
 App(
-    appid="painters",
-    name="Painters",
+    appid="flip_painters",
+    name="FlipPainters",
     apptype=FlipperAppType.EXTERNAL,
     entry_point="painters_app",
     stack_size=7 * 1024,

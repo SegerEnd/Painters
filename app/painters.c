@@ -6,22 +6,24 @@
 #include <flipper_http/flipper_http.h>
 
 #define TAG                   "PAINTERS"
-#define MAP_WIDTH             200
-#define MAP_HEIGHT            200
+#define MAP_WIDTH             500
+#define MAP_HEIGHT            500
 #define SCREEN_WIDTH          128
 #define SCREEN_HEIGHT         64
 #define PAINTED_BYTES_SIZE    ((MAP_WIDTH * MAP_HEIGHT + 7) / 8) // 1 byte = 8 bits
 #define ZOOM_MESSAGE_DURATION 2000 // 2 seconds in milliseconds
+#define PIXEL_PLACE_TIMEOUT   1050 // 1.05 second in milliseconds
 #define WEBSOCKET_URL         "ws://painters.segerend.nl"
 #define WEBSOCKET_PORT        80
 
-#define CHUNK_SIZE            1024 // Server's CHUNK_SIZE (128 - 14 header)
+#define CHUNK_SIZE            1280
+
 
 typedef enum {
     ZoomOut = 1,
-    Zoom1x = 4,
-    Zoom2x = 8,
-    Zoom4x = 16,
+    Zoom1x = 3,
+    Zoom2x = 4,
+    Zoom4x = 8,
 } ZoomLevel;
 
 typedef struct {
@@ -41,6 +43,7 @@ typedef struct {
     uint8_t* painted_bytes;
     ZoomLevel zoom;
     uint32_t zoom_message_start_time;
+    uint32_t pixel_place_timeout_start_time;
     int connected;
     char* last_server_response;
 } PaintData;
@@ -121,6 +124,15 @@ static void draw_ui(Canvas* canvas, const PaintData* state) {
         canvas_set_color(canvas, ColorBlack);
         canvas_draw_str(canvas, 2, 10, zoom_text);
     }
+    if (state->pixel_place_timeout_start_time > 0 &&
+       (current_time - state->pixel_place_timeout_start_time) < PIXEL_PLACE_TIMEOUT) {
+        // seconds to wait
+        uint32_t seconds = (PIXEL_PLACE_TIMEOUT - (current_time - state->pixel_place_timeout_start_time)) / 1000;
+        char timeout_text[32];
+        snprintf(timeout_text, sizeof(timeout_text), "Wait: %ld seconds", seconds);
+
+        canvas_draw_str_aligned(canvas, 64, 57, AlignCenter, AlignBottom, timeout_text);
+    }
 }
 
 void paint_draw_callback(Canvas* canvas, void* ctx) {
@@ -178,8 +190,6 @@ static void cycle_zoom(PaintData* state) {
     state->camera.y = state->cursor.y - view_h / 2;
 
     clamp_camera(&state->camera, state->zoom);
-
-    state->zoom_message_start_time = furi_get_tick();
 
     // Trigger zoom message
     state->zoom_message_start_time = furi_get_tick();
@@ -269,6 +279,31 @@ long int websocket_listener_thread(void* context) {
                     }
                 }
 
+                //  if [PIXEL]x:y:c: then update the pixel in the painted bytes array
+                else if(strncmp(message, "[PIXEL]", 7) == 0) {
+                    const char* x_pos = strstr(message, "x:");
+                    const char* y_pos = strstr(message, "y:");
+                    const char* c_pos = strstr(message, "c:");
+
+                    if(x_pos && y_pos && c_pos) {
+                        int x = atoi(x_pos + 2);
+                        int y = atoi(y_pos + 2);
+                        int color = atoi(c_pos + 2);
+
+                        if(x >= 0 && x < MAP_WIDTH && y >= 0 && y < MAP_HEIGHT) {
+                            int index = y * MAP_WIDTH + x;
+                            int byte_index = index / 8;
+                            int bit_index = index % 8;
+
+                            if(color == 1) {
+                                state->painted_bytes[byte_index] |= (1 << bit_index); // set color to black
+                            } else {
+                                state->painted_bytes[byte_index] &= ~(1 << bit_index); // set color to white
+                            }
+                        }
+                    }
+                }
+
                 // Update last_server_response
                 if(state->last_server_response) free(state->last_server_response);
                 state->last_server_response = strdup(fhttp->last_response);
@@ -318,7 +353,7 @@ int32_t painters_app(void* p) {
     state->cursor.y = MAP_HEIGHT / 2;
 
     state->camera = (Camera){.x = 0, .y = 0};
-    state->zoom = Zoom1x;
+    state->zoom = Zoom2x;
     state->zoom_message_start_time = 0;
 
     center_camera_on_cursor(state);
@@ -415,6 +450,13 @@ int32_t painters_app(void* p) {
                 state->cursor.x++; // Right increases x
                 break;
             case InputKeyOk: {
+                // check if pixel placement timeout is reached then you can paint again
+                uint32_t current_time = furi_get_tick();
+                if(state->pixel_place_timeout_start_time > 0 &&
+                   (current_time - state->pixel_place_timeout_start_time) < PIXEL_PLACE_TIMEOUT) {
+                    break; // Don't allow painting yet
+                }
+
                 int index = state->cursor.y * MAP_WIDTH + state->cursor.x;
                 int byte_index = index / 8;
                 int bit_index = index % 8;
@@ -429,6 +471,9 @@ int32_t painters_app(void* p) {
                     changed = true;
                 }
                 if(changed) {
+                    // set timeout for pixel placement
+                    state->pixel_place_timeout_start_time = current_time;
+                    // send pixel update to server
                     send_pixel(
                         fhttp,
                         state->cursor.x,
@@ -456,13 +501,12 @@ int32_t painters_app(void* p) {
                 break;
             }
         } else if(event.type == InputTypeRepeat) {
+            // Jump 5 pixels
             if(event.key == InputKeyLeft || event.key == InputKeyRight) {
-                // Jump 3 pixels
-                state->cursor.x += (event.key == InputKeyLeft) ? -3 : 3;
+                state->cursor.x += (event.key == InputKeyLeft) ? -5 : 5;
                 should_update = true;
             } else if(event.key == InputKeyUp || event.key == InputKeyDown) {
-                // Jump 3 pixels
-                state->cursor.y += (event.key == InputKeyUp) ? -3 : 3;
+                state->cursor.y += (event.key == InputKeyUp) ? -5 : 5;
                 should_update = true;
             }
         }
@@ -498,6 +542,12 @@ cleanup:
         free(state->last_server_response);
     }
     free(state->painted_bytes);
+    state->painted_bytes = NULL;
+    state->last_server_response = NULL;
+    state->fhttp = NULL;
+    state->vp = NULL;
+    state->mutex = NULL;
+    state->connected = 0;
     free(state);
 
     return 0;
