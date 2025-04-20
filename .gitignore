@@ -8,3 +8,4 @@ dist/*
 .py
 maps/
 .bin
+.DS_Store
