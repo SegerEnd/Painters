@@ -6,3 +6,5 @@ dist/*
 .env
 .ufbt
 .py
+maps/
+.bin

@@ -31,9 +31,11 @@ RUN g++ -std=c++23 -IuWebSockets/src -IuWebSockets/uSockets/src -o painters_serv
 FROM ubuntu:latest
 
 # Copy the compiled binary from the build stage
-COPY --from=build /painters_server /painters_server
+COPY --from=build /painters_server app/painters_server
 
 EXPOSE 80
+
+WORKDIR /app
 
 # Run your app
 CMD ["./painters_server"]

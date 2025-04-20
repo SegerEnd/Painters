@@ -6,6 +6,8 @@ services:
     container_name: painters-server-container
     # ports:
     #   - "80:80"
+    volumes:
+      - ./maps:/app/maps  # Mount the local maps directory to the container
     restart: unless-stopped  # Automatically restart the container unless stopped manually
     networks:
       - my_network

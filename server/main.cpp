@@ -4,22 +4,35 @@
 #include <algorithm>
 #include <cstdint>
 #include <thread>
+#include <fstream>   // for file operations
+#include <atomic>    // for safe thread stop flag
+#include <chrono>    // for sleep_for
+#include <filesystem>
 
 #define WEBSOCKET_PORT 80
 #define MAX_CLIENTS 75
+#define SAVE_INTERVAL (5 * 60) // 5 minutes
+#define PIXEL_PLACE_TIMEOUT   1000 // 1 second in milliseconds
 
 // Canvas configuration
-const int CANVAS_WIDTH = 200;
-const int CANVAS_HEIGHT = 200;
+const int CANVAS_WIDTH = 500;
+const int CANVAS_HEIGHT = 500;
 const size_t PAINTED_BYTES_SIZE = ((CANVAS_WIDTH * CANVAS_HEIGHT + 7) / 8); // 1 byte = 8 bits
 
 const int CHUNK_SEND_DELAY_MS = 250; // Delay between sending chunks in milliseconds
 
 struct MyUserData {
     std::string flipper_name;
+    // timeout for pixel updates
+    std::chrono::time_point<std::chrono::steady_clock> last_pixel_update;
 };
 
 uint8_t* painted_bytes = nullptr; // Global variable to hold the painted bytes (canvas)
+
+// string for the current map file name
+std::string current_map_file = "flipper_map.bin";
+
+std::atomic<bool> keep_saving(true); // Flag to control the save thread
 
 using WebSocketType = uWS::WebSocket<false, true, MyUserData>; // Server, with SSL support
 
@@ -33,12 +46,12 @@ void sendCanvasInChunks(WebSocketType* ws) {
     size_t total_size = PAINTED_BYTES_SIZE;
     
     // Maximum payload size including header
-    const int MAX_PAYLOAD_SIZE = 128;
+    const int MAX_PAYLOAD_SIZE = 1280;
     
     size_t num_chunks = (total_size + MAX_PAYLOAD_SIZE - 1) / MAX_PAYLOAD_SIZE;
 
     // Debug the size of painted_bytes
-    std::cout << "Canvas size: " << total_size << " bytes." << std::endl;
+    // std::cout << "Canvas size: " << total_size << " bytes." << std::endl;
 
     for (size_t chunk_index = 0; chunk_index < num_chunks; ++chunk_index) {
         size_t start = chunk_index * MAX_PAYLOAD_SIZE;
@@ -66,8 +79,8 @@ void sendCanvasInChunks(WebSocketType* ws) {
         // Send the chunk (header + data) as a single message
         ws->send(chunk_message, uWS::TEXT);
 
-        std::cout << "Sent " << chunk_message << " number: " << (chunk_index + 1) << " of " << num_chunks
-                  << " (" << chunk_size << " bytes)" << std::endl;
+        // std::cout << "Sent " << chunk_message << " number: " << (chunk_index + 1) << " of " << num_chunks
+        //           << " (" << chunk_size << " bytes)" << std::endl;
     }
 
     // Notify client that we have finished sending the canvas
@@ -92,6 +105,20 @@ void setPixel(int x, int y, bool color) {
     }
 }
 
+void saveCanvasToFile(const std::string& filename) {
+    std::ofstream out_file(filename, std::ios::binary);
+    if (!out_file) {
+        std::cerr << "Failed to open file for saving: " << filename << std::endl;
+        return;
+    }
+    out_file.write(reinterpret_cast<char*>(painted_bytes), PAINTED_BYTES_SIZE);
+    if (!out_file) {
+        std::cerr << "Failed to write canvas to file: " << filename << std::endl;
+    } else {
+        std::cout << "Canvas saved to file: " << filename << std::endl;
+    }
+}
+
 int main() {
     std::cout << "Starting WebSocket server... 🚀" << std::endl;
 
@@ -102,13 +129,54 @@ int main() {
     }
     memset(painted_bytes, 0, PAINTED_BYTES_SIZE);
 
+    std::thread save_thread;
+
+    // Start background thread to save canvas
+    save_thread = std::thread([](){
+        const std::chrono::seconds save_interval(SAVE_INTERVAL);
+        std::cout << "Saving canvas to file every " << SAVE_INTERVAL / 60 << " minutes..." << std::endl;
+
+        // save in /maps directory
+        std::string maps_dir = "maps/";
+        std::string maps_path = maps_dir + current_map_file;
+
+        // check if maps directory exists
+        if (std::filesystem::exists(maps_dir)) {
+            std::cout << "Maps 📂 directory exists: " << maps_dir << std::endl;
+        } else {
+            std::cout << "Maps 📁 directory does not exist, creating: " << maps_dir << std::endl;
+            std::filesystem::create_directory(maps_dir);
+        }
+
+        // if map file exists, load it in painted_bytes
+        if (std::filesystem::exists(maps_path)) {
+            std::cout << "Loading saved map 🗺️ 💾: " << maps_path << std::endl;
+            std::ifstream in_file(maps_path, std::ios::binary);
+            if (in_file) {
+                in_file.read(reinterpret_cast<char*>(painted_bytes), PAINTED_BYTES_SIZE);
+                if (!in_file) {
+                    std::cerr << "Failed to read canvas from file: " << maps_path << std::endl;
+                } else {
+                    std::cout << "Canvas loaded from file: " << maps_path << std::endl;
+                }
+            } else {
+                std::cerr << "Failed to open file for loading: " << maps_path << std::endl;
+            }
+        }
+
+        while (keep_saving) {
+            std::this_thread::sleep_for(save_interval);
+            saveCanvasToFile(maps_path);
+        }
+    });
+
     uWS::App()
         .ws<MyUserData>(
             "/*",
             {
                 .compression = uWS::SHARED_COMPRESSOR,
-                .maxPayloadLength = 1 * 1024, // For incoming messages (5 bytes < 1024)
-                .idleTimeout = 120,
+                .maxPayloadLength = 64, // For incoming messages (5 bytes < 1024)
+                .idleTimeout = 420, // 7 minutes idle timeout
                 .open = [](WebSocketType* ws) {
                     // limit the number of connected clients
                     if (clients.size() > MAX_CLIENTS) {
@@ -169,7 +237,15 @@ int main() {
                         return;
                     }
 
-                    if (message.starts_with("[PIXEL]")) {                    
+                    if (message.starts_with("[PIXEL]")) {
+                        // check if pixel update is under timeout
+                        auto now = std::chrono::steady_clock::now();
+                        auto last_update = ws->getUserData()->last_pixel_update;
+                        if (now - last_update < std::chrono::milliseconds(PIXEL_PLACE_TIMEOUT)) {
+                            return;
+                        }
+                        ws->getUserData()->last_pixel_update = now;
+
                         std::string_view pixel_data = message.substr(7); // get value after "[PIXEL]"
                     
                         auto x_pos = pixel_data.find("x:");
@@ -200,9 +276,12 @@ int main() {
                         std::string client_name = ws->getUserData()->flipper_name;
                         if (client_name.empty()) {
                             client_name = "Unknown";
+                            // send who are you message?
+                            // std::string who_are_you = "[WHOAREYOU]";
+                            // ws->send(who_are_you, uWS::TEXT);
                         }
                     
-                        std::cout << client_name << ": Set pixel at (" << x << ", " << y << ") to color "
+                        std::cout << client_name << ": Set pixel (" << x << "," << y << ") "
                                   << (color ? "black" : "white") << std::endl;
                     
                         for (auto client : clients) {
@@ -221,8 +300,8 @@ int main() {
                 }
             })
         .any("/*", [](auto *res, auto *req) {
-            std::string ip = std::string(res->getRemoteAddressAsText());
-            std::cout << "📡 Received an HTTP " << req->getMethod() << " request from " << ip 
+            std::string addr = std::string(res->getRemoteAddressAsText());
+            std::cout << "📡 Received an HTTP " << req->getMethod() << " request from " << addr 
               << " for URL: " << req->getMethod() << " " << req->getUrl() << std::endl;
             res->writeStatus("404 Not Found")->end("This server expects WebSocket connections.");
         })
@@ -238,6 +317,14 @@ int main() {
         .run();
 
     clients.clear();
+
+    // save once before exiting
+    saveCanvasToFile(current_map_file);
+
+    keep_saving = false;
+    if (save_thread.joinable()) {
+        save_thread.join();
+    }
 
     free(painted_bytes);
     painted_bytes = nullptr;
