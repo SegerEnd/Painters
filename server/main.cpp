@@ -18,7 +18,7 @@
 const int CANVAS_WIDTH = 500;
 const int CANVAS_HEIGHT = 500;
 const size_t PAINTED_BYTES_SIZE = ((CANVAS_WIDTH * CANVAS_HEIGHT + 7) / 8); // 1 byte = 8 bits
-const int MAX_PAYLOAD_SIZE = 1280;
+const int MAX_PAYLOAD_SIZE = 2048;
 const int CHUNK_SEND_DELAY_MS = 250; // Delay between sending chunks in milliseconds
 
 struct MyUserData {
